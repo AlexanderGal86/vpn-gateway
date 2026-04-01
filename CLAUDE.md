@@ -7,6 +7,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ```bash
 make build              # cargo build --release
 make test               # cargo test
+make lint               # cargo clippy -- -D warnings
+make fmt                # cargo fmt -- --check
+make fmt-fix            # cargo fmt (auto-fix)
+make check              # lint + fmt + test (full CI check)
 make run                # RUST_LOG=vpn_gateway=debug cargo run (creates data/ dir)
 make clean              # cargo clean
 make docker-up          # Docker Compose for VPS deployment (4 services)
@@ -82,6 +86,13 @@ vpn-internal (bridge) ──────┤
 
 - All state flows through `SharedState` (clone of Arc-wrapped DashMap collections)
 - Proxy selection uses EWMA-weighted latency with circuit breaker pattern
+- Single-pass top-N selection (`collect_top_n`) — O(n) scan, O(10) memory per selection
+- Bounded concurrency: TCP connections (Semaphore from config `max_connections`), UDP tasks (Semaphore, 1000), GeoIP lookups (Semaphore, 20)
+- Pool size enforced via `max_proxies` config (AtomicUsize in SharedState)
+- Per-source proxy cap (500) prevents rogue source flooding
+- Sticky session TTL uses AtomicU64 (lock-free reads)
+- Connection pool: liveness check runs outside mutex to avoid blocking
+- EWMA latency clamped to [0, 60000] with NaN/infinity guard
 - Config lives in `config/gateway.json`, proxy sources in `config/sources.json`
 - Persistent state in `data/state.json` (auto-saved periodically)
 - Target platform is Linux (uses `nix` crate for SO_ORIGINAL_DST, iptables for traffic redirection)
