@@ -35,5 +35,8 @@ Thumbs.db
 .vscode/
 .idea/
 
+# Python cache
+__pycache__/
+
 # Claude Code
 .claude/
