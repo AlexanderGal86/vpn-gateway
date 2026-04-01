@@ -65,11 +65,8 @@ impl SharedState {
 
     pub fn with_config(geoip_path: Option<String>, sticky_ttl_secs: u64, max_proxies: usize) -> Self {
         let geoip = match geoip_path {
-            Some(path) => {
-                let g = GeoIp::with_db_path(path);
-                // Note: load() should be called separately as it's async
-                g
-            }
+            // Note: load() should be called separately as it's async
+            Some(path) => GeoIp::with_db_path(path),
             None => GeoIp::new(),
         };
 
@@ -119,8 +116,7 @@ impl SharedState {
         self.proxies
             .iter()
             .filter(|p| p.is_available())
-            .filter(|p| matches!(&p.status, Some(ProxyStatus::Unchecked) | None))
-            .next()
+            .find(|p| matches!(&p.status, Some(ProxyStatus::Unchecked) | None))
             .map(|p| p.value().clone())
     }
 
@@ -459,5 +455,79 @@ mod tests {
         state.insert_if_absent(make_proxy("5.6.7.8", 3128));
         state.cleanup_stale();
         assert_eq!(state.total_count(), 2);
+    }
+
+    /// Full lifecycle: insert → verify → fail → circuit breaker → fallback selection
+    #[test]
+    fn test_full_proxy_lifecycle() {
+        let state = SharedState::new();
+
+        // Phase 1: Insert proxies
+        state.insert_if_absent(make_proxy("10.0.0.1", 8080));
+        state.insert_if_absent(make_proxy("10.0.0.2", 8080));
+        state.insert_if_absent(make_proxy("10.0.0.3", 8080));
+
+        // Phase 2: All unchecked — select_best returns one of them (tier 3)
+        let first = state.select_best();
+        assert!(first.is_some(), "Should select from unchecked tier");
+
+        // Phase 3: Verify two proxies — tier 1 should be preferred
+        state.record_success("10.0.0.1:8080", 100.0);
+        state.record_success("10.0.0.2:8080", 200.0);
+        let selected = state.select_best().unwrap();
+        assert!(
+            selected.host == "10.0.0.1" || selected.host == "10.0.0.2",
+            "Should select from verified tier, got {}",
+            selected.host
+        );
+
+        // Phase 4: Fail proxy 1 until circuit opens (5 fails)
+        for _ in 0..5 {
+            state.record_fail("10.0.0.1:8080");
+        }
+        assert!(
+            !state.proxies.get("10.0.0.1:8080").unwrap().is_available(),
+            "Proxy 1 should be circuit-broken"
+        );
+
+        // Phase 5: Only proxy 2 should be selected now (verified tier)
+        for _ in 0..10 {
+            let p = state.select_best().unwrap();
+            assert_eq!(p.host, "10.0.0.2", "Should only select proxy 2 now");
+        }
+
+        // Phase 6: Recovery — success resets circuit
+        state.record_success("10.0.0.1:8080", 50.0);
+        assert!(
+            state.proxies.get("10.0.0.1:8080").unwrap().is_available(),
+            "Proxy 1 should recover after success"
+        );
+    }
+
+    /// Test that collect_top_n produces correct results with many proxies
+    #[test]
+    fn test_collect_top_n_correctness() {
+        let state = SharedState::new();
+        // Insert 50 proxies with varying latencies
+        for i in 0u16..50 {
+            let host = format!("10.0.{}.{}", i / 255 + 1, i % 255 + 1);
+            let port = 8080;
+            state.insert_if_absent(make_proxy(&host, port));
+            let key = format!("{}:{}", host, port);
+            state.record_success(&key, (i as f64 + 1.0) * 100.0);
+        }
+        assert_eq!(state.verified_count(), 50);
+
+        // select_best should return one of the top-10 lowest latency proxies
+        let selected = state.select_best().unwrap();
+        // Top-10 proxies have EWMA around 4000-4020 (one sample from 5000 initial)
+        // After record_success(100.0): ewma = 5000*0.8 + 100*0.2 = 4020
+        // After record_success(1000.0): ewma = 5000*0.8 + 1000*0.2 = 4200
+        // So top-10 should have ewma < 4300
+        assert!(
+            selected.latency_ewma < 4300.0,
+            "Selected proxy latency {} should be in top-10 range",
+            selected.latency_ewma
+        );
     }
 }

@@ -46,7 +46,7 @@ struct AddProxyRequest {
     protocol: Option<String>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 struct ApiResponse {
     success: bool,
     message: String,
@@ -254,8 +254,8 @@ async fn list_wg_peers() -> Json<Vec<WgPeerInfo>> {
                 let peer_dir = entry.path();
                 let address = read_peer_address(&peer_dir).await;
                 let public_key = read_peer_file(&peer_dir, &format!("publickey-{}", name)).await;
-                let has_lan = peer_dir.join(&format!("{}-lan.conf", name)).exists();
-                let has_wan = peer_dir.join(&format!("{}-wan.conf", name)).exists();
+                let has_lan = peer_dir.join(format!("{}-lan.conf", name)).exists();
+                let has_wan = peer_dir.join(format!("{}-wan.conf", name)).exists();
 
                 result.push(WgPeerInfo {
                     name,
@@ -411,14 +411,177 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
     }
 
-    // TODO: Add integration tests with real HTTP server
-    // These tests require a running axum server with actual network.
-    //
-    // Future tests needed:
-    // - test_add_proxy_valid
-    // - test_add_proxy_duplicate
-    // - test_ban_proxy
-    // - test_unban_proxy
-    // - test_prometheus_metrics_format
-    // - test_health_with_proxies
+    fn test_app_with_state() -> (Router, SharedState) {
+        let state = SharedState::new();
+        let app = create_router(state.clone());
+        (app, state)
+    }
+
+    #[tokio::test]
+    async fn test_add_proxy_valid() {
+        let (app, _state) = test_app_with_state();
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/proxy/add")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"host":"1.2.3.4","port":8080}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn test_add_proxy_duplicate() {
+        let (app, state) = test_app_with_state();
+        // Pre-insert
+        let proxy = crate::pool::proxy::Proxy::new("1.2.3.4".into(), 8080, Protocol::Http);
+        state.proxies.insert("1.2.3.4:8080".into(), proxy);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/proxy/add")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"host":"1.2.3.4","port":8080}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        // Parse body to check success=false
+        let body = axum::body::to_bytes(response.into_body(), 1024).await.unwrap();
+        let resp: ApiResponse = serde_json::from_slice(&body).unwrap();
+        assert!(!resp.success);
+    }
+
+    #[tokio::test]
+    async fn test_ban_proxy_invalid_key() {
+        let app = test_app();
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/proxy/ban/invalid-no-port")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), 1024).await.unwrap();
+        let resp: ApiResponse = serde_json::from_slice(&body).unwrap();
+        assert!(!resp.success);
+    }
+
+    #[tokio::test]
+    async fn test_ban_proxy_invalid_port() {
+        let app = test_app();
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/proxy/ban/1.2.3.4:notaport")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), 1024).await.unwrap();
+        let resp: ApiResponse = serde_json::from_slice(&body).unwrap();
+        assert!(!resp.success);
+    }
+
+    #[tokio::test]
+    async fn test_ban_and_unban_proxy() {
+        let (app, state) = test_app_with_state();
+        let proxy = crate::pool::proxy::Proxy::new("5.6.7.8".into(), 3128, Protocol::Http);
+        state.proxies.insert("5.6.7.8:3128".into(), proxy);
+
+        // Ban
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/proxy/ban/5.6.7.8:3128")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let body = axum::body::to_bytes(response.into_body(), 1024).await.unwrap();
+        let resp: ApiResponse = serde_json::from_slice(&body).unwrap();
+        assert!(resp.success);
+        assert_eq!(state.proxies.len(), 0);
+        assert_eq!(state.banned.len(), 1);
+
+        // Unban (need fresh app since oneshot consumes it)
+        let app2 = create_router(state.clone());
+        let response = app2
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/proxy/unban/5.6.7.8:3128")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let body = axum::body::to_bytes(response.into_body(), 1024).await.unwrap();
+        let resp: ApiResponse = serde_json::from_slice(&body).unwrap();
+        assert!(resp.success);
+        assert_eq!(state.proxies.len(), 1);
+        assert_eq!(state.banned.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_prometheus_metrics_format() {
+        let (app, state) = test_app_with_state();
+        // Add a proxy so metrics have something
+        let proxy = crate::pool::proxy::Proxy::new("1.2.3.4".into(), 8080, Protocol::Http);
+        state.proxies.insert("1.2.3.4:8080".into(), proxy);
+        state.record_success("1.2.3.4:8080", 100.0);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/metrics")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), 4096).await.unwrap();
+        let text = String::from_utf8(body.to_vec()).unwrap();
+        assert!(text.contains("vpn_proxies_total"), "Prometheus metrics should contain vpn_proxies_total");
+    }
+
+    #[tokio::test]
+    async fn test_health_with_proxies() {
+        let (app, state) = test_app_with_state();
+        let proxy = crate::pool::proxy::Proxy::new("1.2.3.4".into(), 8080, Protocol::Http);
+        state.proxies.insert("1.2.3.4:8080".into(), proxy);
+        state.record_success("1.2.3.4:8080", 100.0);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/health")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), 1024).await.unwrap();
+        let text = String::from_utf8(body.to_vec()).unwrap();
+        assert!(text.contains("\"status\":\"ok\""));
+        assert!(text.contains("\"verified_proxies\":1"));
+    }
 }

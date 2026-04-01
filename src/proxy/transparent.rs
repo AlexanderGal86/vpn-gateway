@@ -124,7 +124,7 @@ async fn handle_connection(mut client: TcpStream, peer: SocketAddr, state: Share
         let proxy = if let Some(ref key) = selected_proxy_key {
             state.proxies.get(key).map(|p| p.value().clone())
         } else {
-            state.select_best().map(|p| p.clone())
+            state.select_best()
         };
 
         let proxy = match proxy {

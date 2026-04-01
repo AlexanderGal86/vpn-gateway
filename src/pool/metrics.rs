@@ -59,7 +59,7 @@ pub fn collect(state: &SharedState) -> Metrics {
     }
 
     let (total_successes, total_fails) = proxies.iter().fold((0u64, 0u64), |(s, f), p| {
-        (s + p.success_count as u64, f + p.fail_count as u64)
+        (s + p.success_count, f + p.fail_count)
     });
 
     let success_rate = if total_successes + total_fails > 0 {

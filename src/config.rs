@@ -257,4 +257,43 @@ mod tests {
         let config = futures::executor::block_on(manager.get());
         assert_eq!(config.gateway_port, 1080);
     }
+
+    #[tokio::test]
+    async fn test_config_reload_from_file() {
+        // Write a temp config file
+        let dir = std::env::temp_dir().join("vpn_gw_test_config");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("test_reload.json");
+
+        std::fs::write(&path, r#"{"gateway_port": 2222}"#).unwrap();
+
+        let manager = ConfigManager::new(path.to_str().unwrap().to_string());
+        let config = manager.get().await;
+        assert_eq!(config.gateway_port, 2222);
+
+        // Write new config and reload
+        std::fs::write(&path, r#"{"gateway_port": 3333, "api_port": 9999}"#).unwrap();
+        manager.reload().await.unwrap();
+
+        let config = manager.get().await;
+        assert_eq!(config.gateway_port, 3333);
+        assert_eq!(config.api_port, 9999);
+
+        // Cleanup
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_config_load_malformed_json() {
+        let dir = std::env::temp_dir().join("vpn_gw_test_malformed");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("bad.json");
+        std::fs::write(&path, "not json at all").unwrap();
+
+        let config = Config::load_or_default(path.to_str().unwrap());
+        // Should fallback to defaults
+        assert_eq!(config.gateway_port, 1080);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
