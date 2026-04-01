@@ -1,0 +1,39 @@
+# Rust build artifacts
+/target/
+
+# Runtime data
+/data/state.json
+/data/clients/
+/data/network-status.json
+/data/GeoLite2-*.mmdb
+/data/dbip-*.mmdb
+/data/*.key
+/data/wg/peer*/
+/data/wg/server/
+/data/wg/wg_confs/
+/data/wg/.donoteditthisfile
+/data/wg/coredns/
+
+# Environment files (contain local network config)
+.env
+.env.lan
+
+# Unbound runtime
+config/unbound/unbound.pid
+config/unbound/dev/
+config/unbound/var/
+
+# Logs
+*.log
+gateway.log
+
+# OS files
+Thumbs.db
+*.Zone.Identifier
+
+# IDE
+.vscode/
+.idea/
+
+# Claude Code
+.claude/

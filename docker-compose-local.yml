@@ -1,0 +1,58 @@
+version: "3.9"
+
+services:
+  wireguard:
+    image: lscr.io/linuxserver/wireguard:latest
+    container_name: wireguard
+    cap_add:
+      - NET_ADMIN
+      - SYS_MODULE
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=Etc/UTC
+      - SERVERURL=auto
+      - SERVERPORT=51820
+      - PEERS=1
+      - PEERDNS=10.13.13.1
+      - INTERNAL_SUBNET=10.13.13.0/24
+      - ALLOWEDIPS=0.0.0.0/0
+    volumes:
+      - ./data/wg:/config
+    ports:
+      - "51820:51820/udp"
+    sysctls:
+      - net.ipv4.conf.all.src_valid_mark=1
+    restart: unless-stopped
+
+  vpn-gateway:
+    build: .
+    container_name: vpn-gateway
+    cap_add:
+      - NET_ADMIN
+      - SYS_MODULE
+    depends_on:
+      - wireguard
+    volumes:
+      - ./data:/app/data
+      - ./config:/app/config:ro
+    ports:
+      - "1080:1080/tcp"
+      - "1081:1081/udp"
+      - "8080:8080/tcp"
+    environment:
+      - RUST_LOG=vpn_gateway=info
+    ulimits:
+      nofile: 1048576
+    restart: unless-stopped
+
+  unbound:
+    image: mvance/unbound:latest
+    container_name: unbound
+    cap_add:
+      - NET_ADMIN
+    volumes:
+      - ./config/unbound:/opt/unbound/etc/unbound
+    ports:
+      - "5353:5353/udp"
+    restart: unless-stopped

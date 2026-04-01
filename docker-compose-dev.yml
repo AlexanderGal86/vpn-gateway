@@ -1,0 +1,14 @@
+# Override for Windows/macOS Docker Desktop where macvlan doesn't work.
+# Usage: docker compose -f docker-compose.yml -f docker-compose-dev.yml up
+
+services:
+  net-manager:
+    network_mode: host
+    networks: []
+    environment:
+      - NET_MANAGER_MODE=host
+      - DOCKER_HOST_IP=${DOCKER_HOST_IP:-127.0.0.1}
+
+networks:
+  ext_net:
+    driver: bridge
