@@ -5,7 +5,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::net::UdpSocket;
-use tokio::sync::RwLock;
+use tokio::sync::{RwLock, Semaphore};
 use tracing::{debug, info, warn};
 
 use crate::pool::state::SharedState;
@@ -17,13 +17,16 @@ struct UdpSession {
 
 type SessionTable = Arc<RwLock<HashMap<SocketAddr, UdpSession>>>;
 
+const MAX_UDP_TASKS: usize = 1000;
+
 pub async fn start(_state: SharedState, port: u16) -> anyhow::Result<()> {
     let addr = format!("0.0.0.0:{}", port);
     let socket = Arc::new(UdpSocket::bind(&addr).await?);
 
-    info!("UDP relay listening on {}", addr);
+    info!("UDP relay listening on {} (max {} concurrent tasks)", addr, MAX_UDP_TASKS);
 
     let sessions: SessionTable = Arc::new(RwLock::new(HashMap::new()));
+    let semaphore = Arc::new(Semaphore::new(MAX_UDP_TASKS));
 
     let sessions_clone = sessions.clone();
     tokio::spawn(async move {
@@ -48,10 +51,19 @@ pub async fn start(_state: SharedState, port: u16) -> anyhow::Result<()> {
         let sessions = sessions.clone();
         let socket = socket.clone();
 
+        let permit = match semaphore.clone().try_acquire_owned() {
+            Ok(permit) => permit,
+            Err(_) => {
+                debug!("UDP task limit reached, dropping packet from {}", client_addr);
+                continue;
+            }
+        };
+
         tokio::spawn(async move {
             if let Err(e) = handle_udp_packet(socket, client_addr, &data, &sessions).await {
                 debug!("UDP packet error from {}: {}", client_addr, e);
             }
+            drop(permit);
         });
     }
 }

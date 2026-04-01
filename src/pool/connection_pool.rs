@@ -40,25 +40,33 @@ impl ConnectionPool {
     }
 
     /// Try to get a connection from the pool.
+    /// Pops candidates under lock, then checks liveness outside lock to avoid blocking.
     pub async fn get(&self, proxy_key: &str) -> Option<TcpStream> {
         let pool = self.pools.get(proxy_key)?;
-        let mut guard = pool.value().lock().await;
-        
         let now = Instant::now();
-        
-        // Find a valid connection
-        while let Some(conn) = guard.pop() {
-            if now.duration_since(conn.created_at) > self.max_idle {
-                continue; // Too old
+
+        // Pop up to max_per_proxy candidates under lock (fast, no I/O)
+        let candidates: Vec<PooledConnection> = {
+            let mut guard = pool.value().lock().await;
+            let mut batch = Vec::new();
+            while let Some(conn) = guard.pop() {
+                if now.duration_since(conn.created_at) <= self.max_idle {
+                    batch.push(conn);
+                    break; // take one candidate at a time
+                }
+                // Too old — drop it (implicit)
             }
-            
-            // Check if connection is alive
+            batch
+        };
+
+        // Check liveness outside of lock
+        for conn in candidates {
             if Self::is_connection_alive(&conn.stream).await {
                 tracing::debug!("Connection pool hit: {}", proxy_key);
                 return Some(conn.stream);
             }
         }
-        
+
         None
     }
 

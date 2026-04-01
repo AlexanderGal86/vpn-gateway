@@ -100,7 +100,13 @@ impl Config {
     }
 
     pub fn load_or_default(path: &str) -> Self {
-        Self::load_from_file(path).unwrap_or_default()
+        match Self::load_from_file(path) {
+            Ok(config) => config,
+            Err(e) => {
+                tracing::warn!("Failed to load config from '{}': {}. Using defaults.", path, e);
+                Self::default()
+            }
+        }
     }
 }
 

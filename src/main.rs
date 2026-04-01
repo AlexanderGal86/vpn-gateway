@@ -36,7 +36,7 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!("Loaded config: proxy_port={}, api_port={}", config.gateway_port, config.api_port);
 
     // Create shared state with config
-    let state = SharedState::with_config(config.geoip_path.clone(), config.sticky_session_ttl);
+    let state = SharedState::with_config(config.geoip_path.clone(), config.sticky_session_ttl, config.max_proxies);
 
     // Load GeoIP if configured
     if let Some(ref _path) = config.geoip_path {
@@ -80,8 +80,9 @@ async fn main() -> anyhow::Result<()> {
     // Transparent proxy (accepts clients immediately,
     // waits on first_ready if pool is empty)
     let proxy_state = state.clone();
+    let max_connections = config.max_connections;
     handles.push(tokio::spawn(async move {
-        if let Err(e) = proxy::transparent::run(proxy_state, config.gateway_port).await {
+        if let Err(e) = proxy::transparent::run_with_max_connections(proxy_state, config.gateway_port, max_connections).await {
             tracing::error!("Transparent proxy error: {}", e);
         }
     }));

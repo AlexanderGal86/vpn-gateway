@@ -4,9 +4,11 @@ use crate::proxy::upstream;
 use anyhow::Result;
 use std::net::SocketAddr;
 use std::os::fd::AsRawFd;
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::io::copy_bidirectional;
 use tokio::net::{TcpListener, TcpStream};
+use tokio::sync::Semaphore;
 
 /// Get the original destination address before iptables REDIRECT mangled it.
 ///
@@ -60,7 +62,7 @@ async fn handle_connection(mut client: TcpStream, peer: SocketAddr, state: Share
     let target_port = original_dst.port();
 
     // Step 2: Peek first bytes for SNI/Host
-    let mut peek_buf = vec![0u8; 1024];
+    let mut peek_buf = vec![0u8; 4096];
     let peeked = match tokio::time::timeout(
         Duration::from_secs(5),
         client.peek(&mut peek_buf),
@@ -227,17 +229,27 @@ async fn handle_connection(mut client: TcpStream, peer: SocketAddr, state: Share
     );
 }
 
-/// Start the transparent proxy listener.
-pub async fn run(state: SharedState, port: u16) -> Result<()> {
+/// Start the transparent proxy listener with a configurable connection limit.
+pub async fn run_with_max_connections(state: SharedState, port: u16, max_connections: usize) -> Result<()> {
     let addr = format!("0.0.0.0:{}", port);
     let listener = TcpListener::bind(&addr).await?;
-    tracing::info!("Transparent proxy listening on {}", addr);
+    let semaphore = Arc::new(Semaphore::new(max_connections));
+    tracing::info!("Transparent proxy listening on {} (max {} connections)", addr, max_connections);
 
     loop {
         let (stream, peer) = listener.accept().await?;
         let state = state.clone();
+        let permit = match semaphore.clone().try_acquire_owned() {
+            Ok(permit) => permit,
+            Err(_) => {
+                tracing::warn!("Connection limit reached ({}), rejecting {}", max_connections, peer);
+                drop(stream);
+                continue;
+            }
+        };
         tokio::spawn(async move {
             handle_connection(stream, peer, state).await;
+            drop(permit);
         });
     }
 }
