@@ -1,4 +1,4 @@
-.PHONY: help build test run clean geoip-update geoip-update-dbip docker-up docker-down docker-logs docker-local-up docker-local-down docker-full-up docker-full-down docker-dev-up docker-dev-down status backup update client shell test-connection wg-keygen wg-show-configs
+.PHONY: help build test run clean lint fmt fmt-fix check geoip-update geoip-update-dbip docker-up docker-down docker-logs docker-local-up docker-local-down docker-full-up docker-full-down docker-dev-up docker-dev-down status backup update client shell test-connection wg-keygen wg-show-configs
 
 help:
 	@echo "VPN Gateway Makefile"
@@ -8,6 +8,10 @@ help:
 	@echo "  test               - Run tests"
 	@echo "  run                - Run locally"
 	@echo "  clean              - Clean build artifacts"
+	@echo "  lint               - Run clippy linter"
+	@echo "  fmt                - Check code formatting"
+	@echo "  fmt-fix            - Auto-fix formatting"
+	@echo "  check              - Run lint + fmt + test"
 	@echo ""
 	@echo "Docker targets:"
 	@echo "  docker-up          - Start Docker containers (VPS mode)"
@@ -46,6 +50,17 @@ run:
 
 clean:
 	cargo clean
+
+lint:
+	cargo clippy -- -D warnings
+
+fmt:
+	cargo fmt -- --check
+
+fmt-fix:
+	cargo fmt
+
+check: lint fmt test
 
 geoip-update:
 	@echo "Downloading GeoLite2-City database..."

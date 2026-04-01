@@ -65,11 +65,8 @@ impl SharedState {
 
     pub fn with_config(geoip_path: Option<String>, sticky_ttl_secs: u64, max_proxies: usize) -> Self {
         let geoip = match geoip_path {
-            Some(path) => {
-                let g = GeoIp::with_db_path(path);
-                // Note: load() should be called separately as it's async
-                g
-            }
+            // Note: load() should be called separately as it's async
+            Some(path) => GeoIp::with_db_path(path),
             None => GeoIp::new(),
         };
 
@@ -99,67 +96,81 @@ impl SharedState {
     /// Within each tier, selects from top-N candidates with weighted random
     /// to avoid overloading a single proxy.
     pub fn select_best(&self) -> Option<Proxy> {
-        // Tier 1: Verified proxies
-        let verified: Vec<_> = self
-            .proxies
-            .iter()
-            .filter(|p| p.is_available())
-            .filter(|p| matches!(&p.status, Some(ProxyStatus::Verified)))
-            .map(|p| p.value().clone())
-            .collect();
-
-        if !verified.is_empty() {
-            return Some(self.weighted_random_select(&verified));
+        // Tier 1: Verified proxies — single-pass top-N selection
+        let top = self.collect_top_n(|p| {
+            p.is_available() && matches!(&p.status, Some(ProxyStatus::Verified))
+        });
+        if !top.is_empty() {
+            return Some(Self::weighted_random_select(&top));
         }
 
         // Tier 2: PresumedAlive (state.json)
-        let presumed: Vec<_> = self
-            .proxies
-            .iter()
-            .filter(|p| p.is_available())
-            .filter(|p| matches!(&p.status, Some(ProxyStatus::PresumedAlive)))
-            .map(|p| p.value().clone())
-            .collect();
-
-        if !presumed.is_empty() {
-            return Some(self.weighted_random_select(&presumed));
+        let top = self.collect_top_n(|p| {
+            p.is_available() && matches!(&p.status, Some(ProxyStatus::PresumedAlive))
+        });
+        if !top.is_empty() {
+            return Some(Self::weighted_random_select(&top));
         }
 
         // Tier 3: Unchecked (random — we don't know latency)
         self.proxies
             .iter()
             .filter(|p| p.is_available())
-            .filter(|p| matches!(&p.status, Some(ProxyStatus::Unchecked) | None))
-            .next()
+            .find(|p| matches!(&p.status, Some(ProxyStatus::Unchecked) | None))
             .map(|p| p.value().clone())
     }
 
-    /// Select from candidates using weighted random from top-N.
-    /// Lower score = higher weight.
-    fn weighted_random_select(&self, candidates: &[Proxy]) -> Proxy {
+    /// Single-pass top-N collection from DashMap. O(n) scan, O(TOP_N) memory.
+    fn collect_top_n(&self, filter: impl Fn(&Proxy) -> bool) -> Vec<Proxy> {
         const TOP_N: usize = 10;
-        let mut sorted: Vec<_> = candidates.to_vec();
-        sorted.sort_by(|a, b| {
-            a.score()
-                .partial_cmp(&b.score())
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
-        let top_n: Vec<_> = sorted.into_iter().take(TOP_N).collect();
+        let mut top: Vec<(f64, Proxy)> = Vec::with_capacity(TOP_N);
+        let mut worst_score = f64::MAX;
 
-        if top_n.len() == 1 {
-            return top_n.into_iter().next().unwrap();
+        for entry in self.proxies.iter() {
+            let p = entry.value();
+            if !filter(p) {
+                continue;
+            }
+            let score = p.score();
+            if top.len() < TOP_N {
+                top.push((score, p.clone()));
+                if top.len() == TOP_N {
+                    worst_score = top.iter().map(|(s, _)| *s).fold(f64::MIN, f64::max);
+                }
+            } else if score < worst_score {
+                // Replace the worst entry
+                if let Some(idx) = top
+                    .iter()
+                    .enumerate()
+                    .max_by(|(_, a), (_, b)| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal))
+                    .map(|(i, _)| i)
+                {
+                    top[idx] = (score, p.clone());
+                    worst_score = top.iter().map(|(s, _)| *s).fold(f64::MIN, f64::max);
+                }
+            }
+        }
+
+        top.into_iter().map(|(_, p)| p).collect()
+    }
+
+    /// Select from candidates using weighted random.
+    /// Lower score = higher weight.
+    fn weighted_random_select(candidates: &[Proxy]) -> Proxy {
+        if candidates.len() == 1 {
+            return candidates[0].clone();
         }
 
         // Invert scores for weights (lower score = higher weight)
-        let max_score = top_n.iter().map(|p| p.score()).fold(f64::MIN, f64::max);
-        let weights: Vec<f64> = top_n.iter().map(|p| (max_score - p.score()) + 1.0).collect();
+        let max_score = candidates.iter().map(|p| p.score()).fold(f64::MIN, f64::max);
+        let weights: Vec<f64> = candidates.iter().map(|p| (max_score - p.score()) + 1.0).collect();
 
         match WeightedIndex::new(&weights) {
             Ok(dist) => {
                 let idx = dist.sample(&mut thread_rng());
-                top_n[idx].clone()
+                candidates[idx].clone()
             }
-            Err(_) => top_n[0].clone(),
+            Err(_) => candidates[0].clone(),
         }
     }
 
@@ -444,5 +455,79 @@ mod tests {
         state.insert_if_absent(make_proxy("5.6.7.8", 3128));
         state.cleanup_stale();
         assert_eq!(state.total_count(), 2);
+    }
+
+    /// Full lifecycle: insert → verify → fail → circuit breaker → fallback selection
+    #[test]
+    fn test_full_proxy_lifecycle() {
+        let state = SharedState::new();
+
+        // Phase 1: Insert proxies
+        state.insert_if_absent(make_proxy("10.0.0.1", 8080));
+        state.insert_if_absent(make_proxy("10.0.0.2", 8080));
+        state.insert_if_absent(make_proxy("10.0.0.3", 8080));
+
+        // Phase 2: All unchecked — select_best returns one of them (tier 3)
+        let first = state.select_best();
+        assert!(first.is_some(), "Should select from unchecked tier");
+
+        // Phase 3: Verify two proxies — tier 1 should be preferred
+        state.record_success("10.0.0.1:8080", 100.0);
+        state.record_success("10.0.0.2:8080", 200.0);
+        let selected = state.select_best().unwrap();
+        assert!(
+            selected.host == "10.0.0.1" || selected.host == "10.0.0.2",
+            "Should select from verified tier, got {}",
+            selected.host
+        );
+
+        // Phase 4: Fail proxy 1 until circuit opens (5 fails)
+        for _ in 0..5 {
+            state.record_fail("10.0.0.1:8080");
+        }
+        assert!(
+            !state.proxies.get("10.0.0.1:8080").unwrap().is_available(),
+            "Proxy 1 should be circuit-broken"
+        );
+
+        // Phase 5: Only proxy 2 should be selected now (verified tier)
+        for _ in 0..10 {
+            let p = state.select_best().unwrap();
+            assert_eq!(p.host, "10.0.0.2", "Should only select proxy 2 now");
+        }
+
+        // Phase 6: Recovery — success resets circuit
+        state.record_success("10.0.0.1:8080", 50.0);
+        assert!(
+            state.proxies.get("10.0.0.1:8080").unwrap().is_available(),
+            "Proxy 1 should recover after success"
+        );
+    }
+
+    /// Test that collect_top_n produces correct results with many proxies
+    #[test]
+    fn test_collect_top_n_correctness() {
+        let state = SharedState::new();
+        // Insert 50 proxies with varying latencies
+        for i in 0u16..50 {
+            let host = format!("10.0.{}.{}", i / 255 + 1, i % 255 + 1);
+            let port = 8080;
+            state.insert_if_absent(make_proxy(&host, port));
+            let key = format!("{}:{}", host, port);
+            state.record_success(&key, (i as f64 + 1.0) * 100.0);
+        }
+        assert_eq!(state.verified_count(), 50);
+
+        // select_best should return one of the top-10 lowest latency proxies
+        let selected = state.select_best().unwrap();
+        // Top-10 proxies have EWMA around 4000-4020 (one sample from 5000 initial)
+        // After record_success(100.0): ewma = 5000*0.8 + 100*0.2 = 4020
+        // After record_success(1000.0): ewma = 5000*0.8 + 1000*0.2 = 4200
+        // So top-10 should have ewma < 4300
+        assert!(
+            selected.latency_ewma < 4300.0,
+            "Selected proxy latency {} should be in top-10 range",
+            selected.latency_ewma
+        );
     }
 }

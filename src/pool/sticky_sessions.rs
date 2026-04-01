@@ -1,10 +1,9 @@
 #![allow(dead_code)]
 use chrono::{DateTime, Duration as ChronoDuration, Utc};
 use dashmap::DashMap;
-use parking_lot::RwLock;
 use std::net::SocketAddr;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
 
 const DEFAULT_TTL_SECS: u64 = 300;
 
@@ -19,7 +18,7 @@ pub struct StickySession {
 
 pub struct StickySessionManager {
     sessions: Arc<DashMap<SocketAddr, StickySession>>,
-    ttl: Arc<RwLock<Duration>>,
+    ttl_secs: Arc<AtomicU64>,
 }
 
 impl StickySessionManager {
@@ -30,21 +29,20 @@ impl StickySessionManager {
     pub fn with_ttl(ttl_secs: u64) -> Self {
         Self {
             sessions: Arc::new(DashMap::new()),
-            ttl: Arc::new(RwLock::new(Duration::from_secs(ttl_secs))),
+            ttl_secs: Arc::new(AtomicU64::new(ttl_secs)),
         }
     }
 
-    /// Update TTL at runtime.
+    /// Update TTL at runtime (lock-free).
     pub fn set_ttl(&self, ttl_secs: u64) {
-        let mut ttl = self.ttl.write();
-        *ttl = Duration::from_secs(ttl_secs);
+        self.ttl_secs.store(ttl_secs, Ordering::Relaxed);
         tracing::info!("Sticky session TTL updated to {}s", ttl_secs);
     }
 
     /// Get the sticky proxy for a client, if any.
     pub fn get(&self, client_ip: &SocketAddr) -> Option<String> {
         let session = self.sessions.get(client_ip)?;
-        let ttl = ChronoDuration::seconds(self.ttl.read().as_secs() as i64);
+        let ttl = ChronoDuration::seconds(self.ttl_secs.load(Ordering::Relaxed) as i64);
         if session.last_access < Utc::now() - ttl {
             drop(session);
             self.sessions.remove(client_ip);
@@ -84,7 +82,7 @@ impl StickySessionManager {
     /// Clean up expired sessions.
     pub fn cleanup(&self) {
         let now = Utc::now();
-        let ttl = ChronoDuration::seconds(self.ttl.read().as_secs() as i64);
+        let ttl = ChronoDuration::seconds(self.ttl_secs.load(Ordering::Relaxed) as i64);
         self.sessions
             .retain(|_, session| now.signed_duration_since(session.last_access) < ttl);
     }

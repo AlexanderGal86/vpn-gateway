@@ -95,13 +95,10 @@ impl ConnectionPool {
 
     /// Check if a TCP connection is still alive.
     async fn is_connection_alive(stream: &TcpStream) -> bool {
-        match tokio::time::timeout(
+        matches!(tokio::time::timeout(
             Duration::from_millis(100),
             stream.peek(&mut [0u8; 1])
-        ).await {
-            Ok(Ok(_)) => true,
-            _ => false,
-        }
+        ).await, Ok(Ok(_)))
     }
 
     /// Clean up stale connections.

@@ -95,7 +95,9 @@ pub fn parse_tls_sni(buf: &[u8]) -> Option<String> {
             pos += 5;
 
             if sni_type == 0 && pos + name_len <= extensions_end {
-                return String::from_utf8(buf[pos..pos + name_len].to_vec()).ok();
+                return std::str::from_utf8(&buf[pos..pos + name_len])
+                    .ok()
+                    .map(|s| s.to_string());
             }
             return None;
         }

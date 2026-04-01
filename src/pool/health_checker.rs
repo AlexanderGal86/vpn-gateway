@@ -1,9 +1,14 @@
 use crate::pool::proxy::Proxy;
 use crate::pool::state::SharedState;
 use futures::stream::{FuturesUnordered, StreamExt};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
+use tokio::sync::Semaphore;
+
+/// Max concurrent GeoIP HTTP lookups to avoid network/resource exhaustion.
+const MAX_GEOIP_CONCURRENT: usize = 20;
 
 /// Stage 1: TCP connect check (fast, filters obviously dead proxies).
 async fn check_tcp_connect(proxy: &Proxy, timeout_ms: u64) -> (String, Result<f64, ()>) {
@@ -99,6 +104,8 @@ pub async fn fast_probe(
         tasks.push(async move { check_single(&proxy, timeout_ms).await });
     }
 
+    let geoip_semaphore = Arc::new(Semaphore::new(MAX_GEOIP_CONCURRENT));
+
     let mut found = 0;
     while let Some((key, result)) = tasks.next().await {
         match result {
@@ -106,10 +113,15 @@ pub async fn fast_probe(
                 state.record_success(&key, latency);
                 found += 1;
 
-                // GeoIP lookup for newly verified proxies (best-effort, non-blocking)
+                // GeoIP lookup for newly verified proxies (bounded concurrency)
                 let state_clone = state.clone();
                 let proxy_key = key.clone();
+                let sem = geoip_semaphore.clone();
                 tokio::spawn(async move {
+                    let _permit = match sem.acquire().await {
+                        Ok(p) => p,
+                        Err(_) => return,
+                    };
                     let host = {
                         let guard = state_clone.proxies.get(&proxy_key);
                         match guard {
