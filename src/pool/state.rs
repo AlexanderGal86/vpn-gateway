@@ -5,7 +5,7 @@ use dashmap::DashMap;
 use rand::distributions::WeightedIndex;
 use rand::prelude::Distribution;
 use rand::thread_rng;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use tokio::sync::Notify;
 
@@ -42,6 +42,9 @@ pub struct SharedState {
 
     // === GeoIP ===
     pub geoip: Arc<GeoIp>,
+
+    // === Pool size limit ===
+    pub max_proxies: Arc<AtomicUsize>,
 }
 
 impl SharedState {
@@ -56,10 +59,11 @@ impl SharedState {
             connection_pool: Arc::new(ConnectionPool::new()),
             sticky_sessions: Arc::new(StickySessionManager::new()),
             geoip: Arc::new(GeoIp::new()),
+            max_proxies: Arc::new(AtomicUsize::new(5000)),
         }
     }
 
-    pub fn with_config(geoip_path: Option<String>, sticky_ttl_secs: u64) -> Self {
+    pub fn with_config(geoip_path: Option<String>, sticky_ttl_secs: u64, max_proxies: usize) -> Self {
         let geoip = match geoip_path {
             Some(path) => {
                 let g = GeoIp::with_db_path(path);
@@ -79,6 +83,7 @@ impl SharedState {
             connection_pool: Arc::new(ConnectionPool::new()),
             sticky_sessions: Arc::new(StickySessionManager::with_ttl(sticky_ttl_secs)),
             geoip: Arc::new(geoip),
+            max_proxies: Arc::new(AtomicUsize::new(max_proxies)),
         }
     }
 
@@ -227,8 +232,12 @@ impl SharedState {
     // === Bulk operations ===
 
     /// Insert proxies without overwriting existing ones (from source manager).
-    /// Returns true if the proxy was inserted, false if it already existed.
+    /// Returns true if the proxy was inserted, false if it already existed or pool is full.
     pub fn insert_if_absent(&self, proxy: Proxy) -> bool {
+        let max = self.max_proxies.load(Ordering::Relaxed);
+        if max > 0 && self.proxies.len() >= max {
+            return false;
+        }
         use dashmap::mapref::entry::Entry;
         match self.proxies.entry(proxy.key()) {
             Entry::Vacant(entry) => {
@@ -415,6 +424,16 @@ mod tests {
         }
         assert_eq!(state.total_count(), 1);
         assert_eq!(state.banned.len(), 0);
+    }
+
+    #[test]
+    fn test_insert_rejected_when_pool_full() {
+        let state = SharedState::new();
+        state.max_proxies.store(2, Ordering::Relaxed);
+        assert!(state.insert_if_absent(make_proxy("1.1.1.1", 8080)));
+        assert!(state.insert_if_absent(make_proxy("2.2.2.2", 8080)));
+        assert!(!state.insert_if_absent(make_proxy("3.3.3.3", 8080)));
+        assert_eq!(state.total_count(), 2);
     }
 
     #[test]

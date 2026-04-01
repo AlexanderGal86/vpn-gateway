@@ -165,6 +165,12 @@ async fn ban_proxy(
             message: "Invalid proxy key format. Use host:port".to_string(),
         });
     }
+    if parts[1].parse::<u16>().is_err() {
+        return Json(ApiResponse {
+            success: false,
+            message: "Invalid port number".to_string(),
+        });
+    }
 
     let key = format!("{}:{}", parts[0], parts[1]);
     
@@ -267,7 +273,11 @@ async fn list_wg_peers() -> Json<Vec<WgPeerInfo>> {
 }
 
 async fn read_peer_address(peer_dir: &std::path::Path) -> String {
-    let conf_path = peer_dir.join(format!("{}.conf", peer_dir.file_name().unwrap().to_string_lossy()));
+    let name = match peer_dir.file_name() {
+        Some(n) => n.to_string_lossy(),
+        None => return String::new(),
+    };
+    let conf_path = peer_dir.join(format!("{}.conf", name));
     if let Ok(content) = tokio::fs::read_to_string(&conf_path).await {
         for line in content.lines() {
             if line.starts_with("Address = ") {

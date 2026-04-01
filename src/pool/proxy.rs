@@ -89,6 +89,7 @@ impl Proxy {
 
     /// Update latency using EWMA (α = 0.2)
     pub fn record_success(&mut self, latency_ms: f64) {
+        let latency_ms = if latency_ms.is_finite() { latency_ms.clamp(0.0, 60_000.0) } else { 5000.0 };
         self.latency_ewma = self.latency_ewma * 0.8 + latency_ms * 0.2;
         self.success_count += 1;
         self.consecutive_fails = 0;
@@ -287,6 +288,17 @@ mod tests {
         p.record_success(100.0);
         // EWMA = 0.2 * 100 + 0.8 * 5000 = 20 + 4000 = 4020
         assert!((p.latency_ewma - 4020.0).abs() < 1.0, "EWMA should be ~4020, got {}", p.latency_ewma);
+    }
+
+    #[test]
+    fn test_ewma_handles_nan_and_infinity() {
+        let mut p = Proxy::new("1.2.3.4".into(), 8080, Protocol::Http);
+        p.record_success(f64::NAN);
+        assert!(p.latency_ewma.is_finite(), "EWMA must stay finite after NaN input");
+        p.record_success(f64::INFINITY);
+        assert!(p.latency_ewma.is_finite(), "EWMA must stay finite after infinity input");
+        p.record_success(-100.0);
+        assert!(p.latency_ewma.is_finite(), "EWMA must stay finite after negative input");
     }
 
     #[test]
