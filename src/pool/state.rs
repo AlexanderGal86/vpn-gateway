@@ -99,30 +99,20 @@ impl SharedState {
     /// Within each tier, selects from top-N candidates with weighted random
     /// to avoid overloading a single proxy.
     pub fn select_best(&self) -> Option<Proxy> {
-        // Tier 1: Verified proxies
-        let verified: Vec<_> = self
-            .proxies
-            .iter()
-            .filter(|p| p.is_available())
-            .filter(|p| matches!(&p.status, Some(ProxyStatus::Verified)))
-            .map(|p| p.value().clone())
-            .collect();
-
-        if !verified.is_empty() {
-            return Some(self.weighted_random_select(&verified));
+        // Tier 1: Verified proxies — single-pass top-N selection
+        let top = self.collect_top_n(|p| {
+            p.is_available() && matches!(&p.status, Some(ProxyStatus::Verified))
+        });
+        if !top.is_empty() {
+            return Some(Self::weighted_random_select(&top));
         }
 
         // Tier 2: PresumedAlive (state.json)
-        let presumed: Vec<_> = self
-            .proxies
-            .iter()
-            .filter(|p| p.is_available())
-            .filter(|p| matches!(&p.status, Some(ProxyStatus::PresumedAlive)))
-            .map(|p| p.value().clone())
-            .collect();
-
-        if !presumed.is_empty() {
-            return Some(self.weighted_random_select(&presumed));
+        let top = self.collect_top_n(|p| {
+            p.is_available() && matches!(&p.status, Some(ProxyStatus::PresumedAlive))
+        });
+        if !top.is_empty() {
+            return Some(Self::weighted_random_select(&top));
         }
 
         // Tier 3: Unchecked (random — we don't know latency)
@@ -134,32 +124,57 @@ impl SharedState {
             .map(|p| p.value().clone())
     }
 
-    /// Select from candidates using weighted random from top-N.
-    /// Lower score = higher weight.
-    fn weighted_random_select(&self, candidates: &[Proxy]) -> Proxy {
+    /// Single-pass top-N collection from DashMap. O(n) scan, O(TOP_N) memory.
+    fn collect_top_n(&self, filter: impl Fn(&Proxy) -> bool) -> Vec<Proxy> {
         const TOP_N: usize = 10;
-        let mut sorted: Vec<_> = candidates.to_vec();
-        sorted.sort_by(|a, b| {
-            a.score()
-                .partial_cmp(&b.score())
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
-        let top_n: Vec<_> = sorted.into_iter().take(TOP_N).collect();
+        let mut top: Vec<(f64, Proxy)> = Vec::with_capacity(TOP_N);
+        let mut worst_score = f64::MAX;
 
-        if top_n.len() == 1 {
-            return top_n.into_iter().next().unwrap();
+        for entry in self.proxies.iter() {
+            let p = entry.value();
+            if !filter(p) {
+                continue;
+            }
+            let score = p.score();
+            if top.len() < TOP_N {
+                top.push((score, p.clone()));
+                if top.len() == TOP_N {
+                    worst_score = top.iter().map(|(s, _)| *s).fold(f64::MIN, f64::max);
+                }
+            } else if score < worst_score {
+                // Replace the worst entry
+                if let Some(idx) = top
+                    .iter()
+                    .enumerate()
+                    .max_by(|(_, a), (_, b)| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal))
+                    .map(|(i, _)| i)
+                {
+                    top[idx] = (score, p.clone());
+                    worst_score = top.iter().map(|(s, _)| *s).fold(f64::MIN, f64::max);
+                }
+            }
+        }
+
+        top.into_iter().map(|(_, p)| p).collect()
+    }
+
+    /// Select from candidates using weighted random.
+    /// Lower score = higher weight.
+    fn weighted_random_select(candidates: &[Proxy]) -> Proxy {
+        if candidates.len() == 1 {
+            return candidates[0].clone();
         }
 
         // Invert scores for weights (lower score = higher weight)
-        let max_score = top_n.iter().map(|p| p.score()).fold(f64::MIN, f64::max);
-        let weights: Vec<f64> = top_n.iter().map(|p| (max_score - p.score()) + 1.0).collect();
+        let max_score = candidates.iter().map(|p| p.score()).fold(f64::MIN, f64::max);
+        let weights: Vec<f64> = candidates.iter().map(|p| (max_score - p.score()) + 1.0).collect();
 
         match WeightedIndex::new(&weights) {
             Ok(dist) => {
                 let idx = dist.sample(&mut thread_rng());
-                top_n[idx].clone()
+                candidates[idx].clone()
             }
-            Err(_) => top_n[0].clone(),
+            Err(_) => candidates[0].clone(),
         }
     }
 

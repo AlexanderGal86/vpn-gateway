@@ -108,8 +108,9 @@ pub async fn fast_bootstrap(state: &SharedState) -> usize {
     while let Some(proxies) = tasks.next().await {
         // Take only first 20 from each source for fast bootstrap
         for proxy in proxies.into_iter().take(20) {
-            state.insert_if_absent(proxy);
-            count += 1;
+            if state.insert_if_absent(proxy) {
+                count += 1;
+            }
         }
     }
 
@@ -123,18 +124,22 @@ pub async fn full_refresh(state: &SharedState) -> usize {
     full_refresh_with_sources(state, "config/sources.json").await
 }
 
+/// Max proxies accepted from a single source to prevent a rogue source from flooding the pool.
+const MAX_PER_SOURCE: usize = 500;
+
 /// Full source refresh with custom sources file.
 pub async fn full_refresh_with_sources(state: &SharedState, sources_path: &str) -> usize {
     tracing::info!("Full source refresh starting...");
 
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(15))
+        .connect_timeout(Duration::from_secs(10))
         .build()
         .unwrap_or_default();
 
     // Try to load from file, fallback to defaults
     let source_urls = load_sources_from_file(sources_path).await;
-    
+
     let sources: Vec<(&str, Protocol)> = source_urls
         .iter()
         .map(|url| {
@@ -157,9 +162,10 @@ pub async fn full_refresh_with_sources(state: &SharedState, sources_path: &str) 
 
     let mut count = 0;
     while let Some(proxies) = tasks.next().await {
-        for proxy in proxies {
-            state.insert_if_absent(proxy);
-            count += 1;
+        for proxy in proxies.into_iter().take(MAX_PER_SOURCE) {
+            if state.insert_if_absent(proxy) {
+                count += 1;
+            }
         }
     }
 
