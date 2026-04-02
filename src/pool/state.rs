@@ -12,6 +12,61 @@ use tokio::sync::Notify;
 use super::connection_pool::ConnectionPool;
 use super::geo_ip::GeoIp;
 
+/// Country-based geo-index for O(1) proxy selection by country.
+/// Maps country code → set of proxy keys.
+#[derive(Clone)]
+pub struct GeoIndex {
+    index: Arc<DashMap<String, Vec<String>>>,
+}
+
+impl GeoIndex {
+    pub fn new() -> Self {
+        Self {
+            index: Arc::new(DashMap::new()),
+        }
+    }
+
+    /// Add a proxy key to a country's index.
+    pub fn insert(&self, country: &str, proxy_key: &str) {
+        let mut entry = self.index.entry(country.to_string()).or_default();
+        if !entry.contains(&proxy_key.to_string()) {
+            entry.push(proxy_key.to_string());
+        }
+    }
+
+    /// Remove a proxy key from a country's index.
+    #[allow(dead_code)]
+    pub fn remove(&self, country: &str, proxy_key: &str) {
+        if let Some(mut entry) = self.index.get_mut(country) {
+            entry.retain(|k| k != proxy_key);
+        }
+    }
+
+    /// Get all proxy keys for a country.
+    pub fn get_keys(&self, country: &str) -> Vec<String> {
+        self.index
+            .get(country)
+            .map(|v| v.value().clone())
+            .unwrap_or_default()
+    }
+
+    /// Rebuild the entire index from a proxies DashMap.
+    pub fn rebuild(&self, proxies: &DashMap<String, Proxy>) {
+        self.index.clear();
+        for entry in proxies.iter() {
+            if let Some(ref country) = entry.value().country {
+                self.insert(country, entry.key());
+            }
+        }
+    }
+
+    /// Number of countries indexed.
+    #[allow(dead_code)]
+    pub fn country_count(&self) -> usize {
+        self.index.len()
+    }
+}
+
 /// Thread-safe shared state for the entire gateway.
 ///
 /// Uses DashMap for lock-free concurrent reads (O(1) proxy lookup).
@@ -45,6 +100,9 @@ pub struct SharedState {
 
     // === Pool size limit ===
     pub max_proxies: Arc<AtomicUsize>,
+
+    // === Geo-index for O(1) country lookup ===
+    pub geo_index: GeoIndex,
 }
 
 impl SharedState {
@@ -60,6 +118,7 @@ impl SharedState {
             sticky_sessions: Arc::new(StickySessionManager::new()),
             geoip: Arc::new(GeoIp::new()),
             max_proxies: Arc::new(AtomicUsize::new(5000)),
+            geo_index: GeoIndex::new(),
         }
     }
 
@@ -81,6 +140,7 @@ impl SharedState {
             sticky_sessions: Arc::new(StickySessionManager::with_ttl(sticky_ttl_secs)),
             geoip: Arc::new(geoip),
             max_proxies: Arc::new(AtomicUsize::new(max_proxies)),
+            geo_index: GeoIndex::new(),
         }
     }
 
@@ -175,18 +235,42 @@ impl SharedState {
     }
 
     /// Select best proxy filtered by country code.
+    /// Uses the geo-index for O(1) candidate lookup, then picks the best.
     #[allow(dead_code)]
     pub fn select_best_by_country(&self, country: &str) -> Option<Proxy> {
-        self.proxies
+        let keys = self.geo_index.get_keys(country);
+        if keys.is_empty() {
+            return None;
+        }
+
+        let mut candidates: Vec<Proxy> = keys
             .iter()
-            .filter(|p| p.is_available())
-            .filter(|p| p.country.as_deref() == Some(country))
-            .min_by(|a, b| {
-                a.score()
-                    .partial_cmp(&b.score())
-                    .unwrap_or(std::cmp::Ordering::Equal)
-            })
-            .map(|p| p.value().clone())
+            .filter_map(|k| self.proxies.get(k).map(|p| p.value().clone()))
+            .filter(|p| p.is_available() && matches!(&p.status, Some(ProxyStatus::Verified)))
+            .collect();
+
+        if candidates.is_empty() {
+            return None;
+        }
+
+        candidates.sort_by(|a, b| {
+            a.score()
+                .partial_cmp(&b.score())
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        candidates.truncate(10);
+        Some(Self::weighted_random_select(&candidates))
+    }
+
+    /// Update the geo-index when a proxy's country is set.
+    pub fn update_geo_index(&self, proxy_key: &str, country: &str) {
+        self.geo_index.insert(country, proxy_key);
+    }
+
+    /// Rebuild the full geo-index from current proxy state.
+    #[allow(dead_code)]
+    pub fn rebuild_geo_index(&self) {
+        self.geo_index.rebuild(&self.proxies);
     }
 
     // === Proxy mutations ===
@@ -502,6 +586,79 @@ mod tests {
             state.proxies.get("10.0.0.1:8080").unwrap().is_available(),
             "Proxy 1 should recover after success"
         );
+    }
+
+    #[test]
+    fn test_geo_index_insert_and_lookup() {
+        let index = GeoIndex::new();
+        index.insert("US", "1.2.3.4:8080");
+        index.insert("US", "5.6.7.8:3128");
+        index.insert("DE", "9.0.1.2:8080");
+
+        let us_keys = index.get_keys("US");
+        assert_eq!(us_keys.len(), 2);
+        assert!(us_keys.contains(&"1.2.3.4:8080".to_string()));
+        assert!(us_keys.contains(&"5.6.7.8:3128".to_string()));
+
+        let de_keys = index.get_keys("DE");
+        assert_eq!(de_keys.len(), 1);
+
+        assert_eq!(index.get_keys("JP").len(), 0);
+        assert_eq!(index.country_count(), 2);
+    }
+
+    #[test]
+    fn test_geo_index_no_duplicates() {
+        let index = GeoIndex::new();
+        index.insert("US", "1.2.3.4:8080");
+        index.insert("US", "1.2.3.4:8080");
+        assert_eq!(index.get_keys("US").len(), 1);
+    }
+
+    #[test]
+    fn test_geo_index_remove() {
+        let index = GeoIndex::new();
+        index.insert("US", "1.2.3.4:8080");
+        index.insert("US", "5.6.7.8:3128");
+        index.remove("US", "1.2.3.4:8080");
+        let keys = index.get_keys("US");
+        assert_eq!(keys.len(), 1);
+        assert_eq!(keys[0], "5.6.7.8:3128");
+    }
+
+    #[test]
+    fn test_select_best_by_country_uses_geo_index() {
+        let state = SharedState::new();
+        // Insert and verify proxies
+        state.insert_if_absent(make_proxy("1.2.3.4", 8080));
+        state.insert_if_absent(make_proxy("5.6.7.8", 3128));
+        state.insert_if_absent(make_proxy("9.0.1.2", 8080));
+        state.record_success("1.2.3.4:8080", 100.0);
+        state.record_success("5.6.7.8:3128", 200.0);
+        state.record_success("9.0.1.2:8080", 150.0);
+
+        // Set countries and update geo-index
+        if let Some(mut p) = state.proxies.get_mut("1.2.3.4:8080") {
+            p.country = Some("US".to_string());
+        }
+        if let Some(mut p) = state.proxies.get_mut("5.6.7.8:3128") {
+            p.country = Some("US".to_string());
+        }
+        if let Some(mut p) = state.proxies.get_mut("9.0.1.2:8080") {
+            p.country = Some("DE".to_string());
+        }
+        state.update_geo_index("1.2.3.4:8080", "US");
+        state.update_geo_index("5.6.7.8:3128", "US");
+        state.update_geo_index("9.0.1.2:8080", "DE");
+
+        // Select by country
+        let us_proxy = state.select_best_by_country("US").unwrap();
+        assert!(us_proxy.host == "1.2.3.4" || us_proxy.host == "5.6.7.8");
+
+        let de_proxy = state.select_best_by_country("DE").unwrap();
+        assert_eq!(de_proxy.host, "9.0.1.2");
+
+        assert!(state.select_best_by_country("JP").is_none());
     }
 
     /// Test that collect_top_n produces correct results with many proxies

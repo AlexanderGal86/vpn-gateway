@@ -132,8 +132,9 @@ pub async fn fast_probe(
                     if let Ok(ip) = host.parse::<std::net::IpAddr>() {
                         if let Some(country) = state_clone.geoip.country_code(ip).await {
                             if let Some(mut p) = state_clone.proxies.get_mut(&proxy_key) {
-                                p.country = Some(country);
+                                p.country = Some(country.clone());
                             }
+                            state_clone.update_geo_index(&proxy_key, &country);
                         }
                     }
                 });
