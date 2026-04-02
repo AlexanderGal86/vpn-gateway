@@ -54,11 +54,15 @@ pub struct Config {
     
     #[serde(default)]
     pub enable_sticky_sessions: bool,
+
+    #[serde(default = "default_dns_upstream")]
+    pub dns_upstream: String,
 }
 
 fn default_gateway_port() -> u16 { 1080 }
 fn default_api_port() -> u16 { 8080 }
 fn default_udp_port() -> u16 { 1081 }
+fn default_dns_upstream() -> String { "10.13.13.1:53".to_string() }
 fn default_max_proxies() -> usize { 5000 }
 fn default_max_connections() -> usize { 10000 }
 fn default_health_check_interval() -> u64 { 30 }
@@ -88,6 +92,7 @@ impl Default for Config {
             enable_connection_pool: false,
             sticky_session_ttl: default_sticky_session_ttl(),
             enable_sticky_sessions: false,
+            dns_upstream: default_dns_upstream(),
         }
     }
 }
@@ -114,16 +119,18 @@ impl Config {
 pub struct ConfigManager {
     config: Arc<RwLock<Config>>,
     watch_path: PathBuf,
+    shutdown: Arc<tokio::sync::Notify>,
 }
 
 impl ConfigManager {
     pub fn new(path: String) -> Self {
         let watch_path = PathBuf::from(&path);
         let initial_config = Config::load_or_default(&path);
-        
+
         Self {
             config: Arc::new(RwLock::new(initial_config)),
             watch_path,
+            shutdown: Arc::new(tokio::sync::Notify::new()),
         }
     }
 
@@ -152,7 +159,8 @@ impl ConfigManager {
         let (tx, rx) = tokio::sync::mpsc::channel(100);
 
         let watch_path = self.watch_path.clone();
-        
+        let shutdown = self.shutdown.clone();
+
         tokio::spawn(async move {
             let watcher = notify::recommended_watcher(move |res: Result<notify::Event, notify::Error>| {
                 match res {
@@ -164,15 +172,17 @@ impl ConfigManager {
                     Err(e) => tracing::error!("Config watch error: {}", e),
                 }
             });
-            
+
             if let Ok(mut watcher) = watcher {
                 if let Err(e) = watcher.watch(&watch_path, notify::RecursiveMode::NonRecursive) {
                     tracing::error!("Failed to watch config: {}", e);
+                    return;
                 }
                 tracing::info!("Config file watcher started for {:?}", watch_path);
-                loop {
-                    tokio::time::sleep(tokio::time::Duration::from_secs(60)).await;
-                }
+                // Wait for shutdown signal; watcher stays alive as long as it's in scope
+                shutdown.notified().await;
+                tracing::info!("Config file watcher stopped");
+                // watcher is dropped here, cleaning up OS resources
             } else {
                 tracing::error!("Failed to create config file watcher");
             }
@@ -181,9 +191,9 @@ impl ConfigManager {
         rx
     }
 
-    /// Stop watching for changes.
+    /// Stop watching for changes. Signals the watcher task to exit cleanly.
     pub async fn stop_watching(&self) {
-        // The watcher task runs until process shutdown (handled via JoinHandle.abort in main)
+        self.shutdown.notify_one();
     }
 }
 
@@ -222,6 +232,7 @@ mod tests {
         assert!(!config.enable_connection_pool);
         assert_eq!(config.sticky_session_ttl, 300);
         assert!(!config.enable_sticky_sessions);
+        assert_eq!(config.dns_upstream, "10.13.13.1:53");
     }
 
     #[test]

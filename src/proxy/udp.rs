@@ -19,11 +19,12 @@ type SessionTable = Arc<RwLock<HashMap<SocketAddr, UdpSession>>>;
 
 const MAX_UDP_TASKS: usize = 1000;
 
-pub async fn start(_state: SharedState, port: u16) -> anyhow::Result<()> {
+pub async fn start(_state: SharedState, port: u16, dns_upstream: String) -> anyhow::Result<()> {
     let addr = format!("0.0.0.0:{}", port);
     let socket = Arc::new(UdpSocket::bind(&addr).await?);
 
-    info!("UDP relay listening on {} (max {} concurrent tasks)", addr, MAX_UDP_TASKS);
+    info!("UDP relay listening on {} (DNS upstream: {}, max {} concurrent tasks)", addr, dns_upstream, MAX_UDP_TASKS);
+    let dns_upstream: Arc<str> = Arc::from(dns_upstream);
 
     let sessions: SessionTable = Arc::new(RwLock::new(HashMap::new()));
     let semaphore = Arc::new(Semaphore::new(MAX_UDP_TASKS));
@@ -50,6 +51,7 @@ pub async fn start(_state: SharedState, port: u16) -> anyhow::Result<()> {
         let data = buf[..len].to_vec();
         let sessions = sessions.clone();
         let socket = socket.clone();
+        let dns_upstream = dns_upstream.clone();
 
         let permit = match semaphore.clone().try_acquire_owned() {
             Ok(permit) => permit,
@@ -60,7 +62,7 @@ pub async fn start(_state: SharedState, port: u16) -> anyhow::Result<()> {
         };
 
         tokio::spawn(async move {
-            if let Err(e) = handle_udp_packet(socket, client_addr, &data, &sessions).await {
+            if let Err(e) = handle_udp_packet(socket, client_addr, &data, &sessions, &dns_upstream).await {
                 debug!("UDP packet error from {}: {}", client_addr, e);
             }
             drop(permit);
@@ -73,6 +75,7 @@ async fn handle_udp_packet(
     client_addr: SocketAddr,
     data: &[u8],
     sessions: &SessionTable,
+    dns_upstream: &str,
 ) -> anyhow::Result<()> {
     let needs_new_session = {
         let sessions_read = sessions.read().await;
@@ -97,7 +100,7 @@ async fn handle_udp_packet(
     {
         let sessions_read = sessions.read().await;
         if let Some(session) = sessions_read.get(&client_addr) {
-            let upstream_addr = detect_upstream(data);
+            let upstream_addr = detect_upstream(data, dns_upstream);
 
             session.upstream.send_to(data, upstream_addr).await?;
 
@@ -128,18 +131,18 @@ async fn handle_udp_packet(
     Ok(())
 }
 
-fn detect_upstream(data: &[u8]) -> &'static str {
+fn detect_upstream<'a>(data: &[u8], dns_upstream: &'a str) -> &'a str {
     // Check if it looks like a DNS query (QR bit = 0, standard query opcode = 0)
     if data.len() > 12 {
         let flags = u16::from_be_bytes([data[2], data[3]]);
         let qr = (flags >> 15) & 1;
         let opcode = (flags >> 11) & 0xF;
         if qr == 0 && opcode == 0 {
-            return "10.13.13.1:53"; // Unbound via WireGuard
+            return dns_upstream;
         }
     }
-    // Default: Unbound for all UDP traffic
-    "10.13.13.1:53"
+    // Default: DNS upstream for all UDP traffic
+    dns_upstream
 }
 
 async fn cleanup_sessions(sessions: &SessionTable) {
@@ -155,6 +158,8 @@ async fn cleanup_sessions(sessions: &SessionTable) {
 mod tests {
     use super::*;
 
+    const TEST_DNS: &str = "10.13.13.1:53";
+
     #[test]
     fn test_detect_upstream_dns_query() {
         // DNS query: QR=0 (query), opcode=0 (standard)
@@ -168,7 +173,7 @@ mod tests {
             0x00, 0x00, // NSCOUNT: 0
             0x00, 0x00, // ARCOUNT: 0
         ];
-        assert_eq!(detect_upstream(&dns_query), "10.13.13.1:53");
+        assert_eq!(detect_upstream(&dns_query, TEST_DNS), TEST_DNS);
     }
 
     #[test]
@@ -182,20 +187,30 @@ mod tests {
             0x00, 0x00, // NSCOUNT: 0
             0x00, 0x00, // ARCOUNT: 0
         ];
-        // Still routes to Unbound (default)
-        assert_eq!(detect_upstream(&dns_response), "10.13.13.1:53");
+        // Still routes to DNS upstream (default)
+        assert_eq!(detect_upstream(&dns_response, TEST_DNS), TEST_DNS);
     }
 
     #[test]
     fn test_detect_upstream_short_packet() {
         // Packet too short to be DNS
         let short: Vec<u8> = vec![0x01, 0x02, 0x03];
-        assert_eq!(detect_upstream(&short), "10.13.13.1:53");
+        assert_eq!(detect_upstream(&short, TEST_DNS), TEST_DNS);
     }
 
     #[test]
     fn test_detect_upstream_empty_packet() {
-        assert_eq!(detect_upstream(&[]), "10.13.13.1:53");
+        assert_eq!(detect_upstream(&[], TEST_DNS), TEST_DNS);
+    }
+
+    #[test]
+    fn test_detect_upstream_custom_dns() {
+        let custom = "8.8.8.8:53";
+        let dns_query: Vec<u8> = vec![
+            0x12, 0x34, 0x01, 0x00, 0x00, 0x01,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        ];
+        assert_eq!(detect_upstream(&dns_query, custom), custom);
     }
 
     // TODO: Add integration test with real UDP socket
