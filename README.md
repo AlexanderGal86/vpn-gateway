@@ -463,6 +463,101 @@ The gateway uses a 4-level fast-start strategy to minimize time-to-first-connect
 
 If the pool is empty at startup, the TCP listener waits on a `Notify` signal until the first healthy proxy becomes available.
 
+Proxies from `state.json` with `last_success < 1 hour` are marked "presumed alive" and used immediately while fresh validation runs in background. Priority order: verified (low latency) → presumed alive → unchecked (just loaded).
+
+---
+
+## Circuit Breaker
+
+The gateway uses an escalating circuit breaker to handle failing proxies:
+
+| Consecutive Failures | Action |
+|---------------------|--------|
+| 1 | Continue using (jitter added to score) |
+| 3 | Score penalty +150 (deprioritized in selection) |
+| 5 | Circuit OPEN: disabled for 60 seconds |
+| 10 | Disabled for 300 seconds (5 min) |
+| 20 | Disabled for 3600 seconds (1 hour) |
+| 50 | Permanently removed from pool |
+
+After the cooldown period, the proxy is re-tested. If it passes health check, the failure counter resets.
+
+---
+
+## Failure Scenarios
+
+### Proxy dies mid-session
+- Gateway detects EOF/error on upstream connection
+- Proxy marked as failed (`record_fail` → circuit breaker)
+- Current TCP request fails (can't retry — TLS state is lost)
+- Next request automatically routes to a different proxy
+- Browser auto-retry usually succeeds transparently
+
+### All proxies in pool die
+1. Fall back to "presumed alive" proxies from `state.json`
+2. If none available — emergency `fast_probe` (20 random from source list)
+3. If still nothing — new connections wait on `Notify` (10s timeout)
+4. Background: health checker continues scanning, source manager fetches fresh lists
+
+---
+
+## Latency Estimates
+
+| Path | Expected Latency |
+|------|-----------------|
+| Direct VPN (no proxy) | ~40-80ms |
+| Free proxy through gateway | ~400-1500ms |
+| UDP through VPN (DNS, VoIP) | ~50-100ms |
+
+### Free Proxy Statistics
+
+| Metric | Value |
+|--------|-------|
+| Proxies in public lists | 5,000-8,000 |
+| Actually working | 20-30% |
+| Average latency (working) | 500-2,000ms |
+| Health check timeout | 3-15 seconds |
+| Average proxy lifetime | 10 min - 24 hours |
+| Source list refresh | Every 1-5 minutes |
+
+---
+
+## Entrypoint & iptables
+
+The Docker entrypoint (`scripts/entrypoint.sh`) configures the network stack:
+
+1. **WireGuard setup** — Brings up `wg0` interface (if `wg0.conf` exists)
+2. **Kill switch** — `iptables OUTPUT DROP` with exceptions for `lo`, `wg0`, and established connections
+3. **DNS redirect** — UDP port 53 → Unbound (:5353)
+4. **TCP redirect** — All TCP traffic → gateway (:1080)
+5. **IPv6 block** — Full `ip6tables` DROP to prevent leaks
+
+This ensures all client traffic is either proxied (TCP) or tunneled (UDP), with no direct internet leaks.
+
+---
+
+## net-manager (Python Sidecar)
+
+Located in `services/net-manager/`, this service handles network configuration:
+
+| Module | Purpose |
+|--------|---------|
+| `net_manager.py` | Main orchestrator — IP monitoring, UPnP renewal loop (30s poll) |
+| `upnp_client.py` | miniupnpc wrapper — UPnP IGD port forwarding to router |
+| `config_generator.py` | WireGuard config generation — LAN + WAN variants per peer |
+| `web_server.py` | Flask HTTP server (:8088) — config download + QR codes |
+
+### What it does
+1. Acquires a real LAN IP via macvlan + DHCP
+2. Discovers router via UPnP IGD and forwards WireGuard port
+3. Detects external IP via `GetExternalIPAddress()`
+4. Generates WireGuard configs (LAN variant with local IP, WAN variant with external IP)
+5. Creates QR codes for mobile client setup
+6. Serves configs via HTTP on port 8088
+7. Monitors for IP changes every 30 seconds, regenerates configs on change
+
+> **Note**: macvlan doesn't work on Docker Desktop (Windows/Mac). Use `make docker-dev-up` which replaces macvlan with host networking.
+
 ---
 
 ## Ports
