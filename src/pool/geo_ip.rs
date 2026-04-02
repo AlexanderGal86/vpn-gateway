@@ -1,5 +1,6 @@
 #![allow(dead_code)]
 use anyhow::Result;
+use dashmap::DashMap;
 use serde::Deserialize;
 use std::net::IpAddr;
 use std::path::Path;
@@ -35,6 +36,9 @@ pub struct GeoIp {
     db_path: Option<String>,
     loaded: Arc<RwLock<bool>>,
     client: reqwest::Client,
+    /// Cache of GeoIP lookups: IP → GeoIpInfo.
+    /// Eliminates redundant API requests for the same IP.
+    cache: Arc<DashMap<IpAddr, GeoIpInfo>>,
 }
 
 impl GeoIp {
@@ -43,6 +47,7 @@ impl GeoIp {
             db_path: None,
             loaded: Arc::new(RwLock::new(false)),
             client: reqwest::Client::new(),
+            cache: Arc::new(DashMap::new()),
         }
     }
 
@@ -51,6 +56,7 @@ impl GeoIp {
             db_path: Some(path),
             loaded: Arc::new(RwLock::new(false)),
             client: reqwest::Client::new(),
+            cache: Arc::new(DashMap::new()),
         }
     }
 
@@ -88,11 +94,17 @@ impl GeoIp {
         Ok(())
     }
 
-    /// Lookup country by IP using geo.wp-statistics.com API
+    /// Lookup country by IP using geo.wp-statistics.com API.
+    /// Results are cached to eliminate redundant API requests.
     pub async fn lookup(&self, ip: IpAddr) -> Option<GeoIpInfo> {
+        // Check cache first
+        if let Some(cached) = self.cache.get(&ip) {
+            return Some(cached.value().clone());
+        }
+
         let url = format!("https://geo.wp-statistics.com/{}?format=json", ip);
 
-        match self.client.get(&url).send().await {
+        let info = match self.client.get(&url).send().await {
             Ok(resp) => match resp.json::<ApiResponse>().await {
                 Ok(data) => Some(GeoIpInfo {
                     country_code: data.country_code,
@@ -105,7 +117,19 @@ impl GeoIp {
                 tracing::debug!("GeoIP lookup failed for {}: {}", ip, e);
                 None
             }
+        };
+
+        // Cache the result
+        if let Some(ref info) = info {
+            self.cache.insert(ip, info.clone());
         }
+
+        info
+    }
+
+    /// Number of cached GeoIP entries.
+    pub fn cache_size(&self) -> usize {
+        self.cache.len()
     }
 
     pub async fn lookup_str(&self, ip_str: &str) -> Option<GeoIpInfo> {
@@ -146,5 +170,27 @@ mod tests {
     async fn test_geoip_auto_detect() {
         let geo = GeoIp::with_auto_detect();
         assert!(geo.is_loaded().await);
+    }
+
+    #[tokio::test]
+    async fn test_geoip_cache_stores_and_returns() {
+        let geo = GeoIp::new();
+        let ip: IpAddr = "1.2.3.4".parse().unwrap();
+
+        // Manually insert into cache
+        geo.cache.insert(
+            ip,
+            GeoIpInfo {
+                country_code: Some("US".to_string()),
+                country_name: Some("United States".to_string()),
+                city: None,
+            },
+        );
+        assert_eq!(geo.cache_size(), 1);
+
+        // Lookup should return cached value without API call
+        let result = geo.lookup(ip).await;
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().country_code, Some("US".to_string()));
     }
 }

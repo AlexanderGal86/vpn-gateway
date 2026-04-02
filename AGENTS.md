@@ -410,6 +410,6 @@ Lazy lookup: GeoIP resolved asynchronously when proxy passes health check. Bound
 - [x] Hardcoded DNS upstream `10.13.13.1:53` in `udp.rs` (move to config)
 
 ### Enhancements
-- [ ] Geo-index for O(1) country-based proxy selection (`HashMap<country, Vec<proxy_key>>` in `state.rs`)
-- [ ] GeoIP lookup cache (`DashMap` in `geo_ip.rs`) to eliminate redundant API requests
-- [ ] Prometheus typed metrics — add `# TYPE` / `# HELP` headers to `/metrics` output in `metrics.rs`
+- [x] Geo-index for O(1) country-based proxy selection (`HashMap<country, Vec<proxy_key>>` in `state.rs`)
+- [x] GeoIP lookup cache (`DashMap` in `geo_ip.rs`) to eliminate redundant API requests
+- [x] Prometheus typed metrics — add `# TYPE` / `# HELP` headers to `/metrics` output in `metrics.rs`
