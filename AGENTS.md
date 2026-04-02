@@ -397,7 +397,7 @@ Lazy lookup: GeoIP resolved asynchronously when proxy passes health check. Bound
 - [x] Integration tests for persistence module (requires temp directory setup)
 - [x] Integration tests for transparent proxy (requires TCP listener + SO_ORIGINAL_DST)
 - [x] Integration tests for upstream handshake (requires mock HTTP/SOCKS5 proxy)
-- [ ] Benchmarks: `cargo bench` for `collect_top_n()`, EWMA scoring, and hot paths
+- [x] Benchmarks: `cargo bench` for `collect_top_n()`, EWMA scoring, and hot paths
 
 ### Features
 - [ ] IPv6 SO_ORIGINAL_DST support (`sockaddr_in6` in `transparent.rs`)

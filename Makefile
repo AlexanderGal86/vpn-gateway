@@ -1,4 +1,4 @@
-.PHONY: help build test run clean lint fmt fmt-fix check geoip-update geoip-update-dbip docker-up docker-down docker-logs docker-local-up docker-local-down docker-full-up docker-full-down docker-dev-up docker-dev-down status backup update client shell test-connection wg-keygen wg-show-configs
+.PHONY: help build test run clean lint fmt fmt-fix check bench geoip-update geoip-update-dbip docker-up docker-down docker-logs docker-local-up docker-local-down docker-full-up docker-full-down docker-dev-up docker-dev-down status backup update client shell test-connection wg-keygen wg-show-configs
 
 help:
 	@echo "VPN Gateway Makefile"
@@ -11,6 +11,7 @@ help:
 	@echo "  lint               - Run clippy linter"
 	@echo "  fmt                - Check code formatting"
 	@echo "  fmt-fix            - Auto-fix formatting"
+	@echo "  bench              - Run benchmarks (criterion)"
 	@echo "  check              - Run lint + fmt + test"
 	@echo ""
 	@echo "Docker targets:"
@@ -59,6 +60,9 @@ fmt:
 
 fmt-fix:
 	cargo fmt
+
+bench:
+	cargo bench --bench proxy_bench
 
 check: lint fmt test
 
