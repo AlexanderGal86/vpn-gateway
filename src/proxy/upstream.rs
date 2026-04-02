@@ -212,6 +212,103 @@ pub async fn connect_to_target(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
+
+    /// Spawn a mock HTTP CONNECT proxy that responds with the given status code.
+    async fn mock_http_proxy(status: u16) -> (u16, tokio::task::JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+
+        let handle = tokio::spawn(async move {
+            if let Ok((mut stream, _)) = listener.accept().await {
+                // Read the CONNECT request
+                let mut buf = [0u8; 1024];
+                let n = stream.read(&mut buf).await.unwrap_or(0);
+                let request = String::from_utf8_lossy(&buf[..n]);
+
+                if request.contains("CONNECT") {
+                    let response = format!(
+                        "HTTP/1.1 {} {}\r\n\r\n",
+                        status,
+                        if status == 200 { "Connection established" } else { "Forbidden" }
+                    );
+                    let _ = stream.write_all(response.as_bytes()).await;
+
+                    if status == 200 {
+                        // Echo back any data sent through the tunnel
+                        let mut data = [0u8; 4096];
+                        if let Ok(n) = stream.read(&mut data).await {
+                            if n > 0 {
+                                let _ = stream.write_all(&data[..n]).await;
+                            }
+                        }
+                    }
+                }
+            }
+        });
+
+        (port, handle)
+    }
+
+    /// Spawn a mock SOCKS5 proxy that handles the full handshake.
+    /// If `success` is true, responds with REP=0 (success), otherwise REP=5 (refused).
+    async fn mock_socks5_proxy(success: bool) -> (u16, tokio::task::JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+
+        let handle = tokio::spawn(async move {
+            if let Ok((mut stream, _)) = listener.accept().await {
+                // Step 1: Read greeting (VER, NMETHODS, METHODS...)
+                let mut greeting = [0u8; 3];
+                if stream.read_exact(&mut greeting).await.is_err() { return; }
+
+                // Step 2: Respond with method selection (no auth)
+                let _ = stream.write_all(&[0x05, 0x00]).await;
+
+                // Step 3: Read connect request
+                let mut header = [0u8; 4];
+                if stream.read_exact(&mut header).await.is_err() { return; }
+
+                // Read address based on ATYP
+                match header[3] {
+                    0x03 => {
+                        // Domain
+                        let mut len = [0u8; 1];
+                        let _ = stream.read_exact(&mut len).await;
+                        let mut domain = vec![0u8; len[0] as usize];
+                        let _ = stream.read_exact(&mut domain).await;
+                        let mut port_buf = [0u8; 2];
+                        let _ = stream.read_exact(&mut port_buf).await;
+                    }
+                    0x01 => {
+                        // IPv4
+                        let mut skip = [0u8; 6];
+                        let _ = stream.read_exact(&mut skip).await;
+                    }
+                    _ => return,
+                }
+
+                // Step 4: Respond
+                let rep = if success { 0x00 } else { 0x05 };
+                // VER=5, REP, RSV=0, ATYP=1(IPv4), BND.ADDR=0.0.0.0, BND.PORT=0
+                let response = [0x05, rep, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00];
+                let _ = stream.write_all(&response).await;
+
+                if success {
+                    // Echo back data through the tunnel
+                    let mut data = [0u8; 4096];
+                    if let Ok(n) = stream.read(&mut data).await {
+                        if n > 0 {
+                            let _ = stream.write_all(&data[..n]).await;
+                        }
+                    }
+                }
+            }
+        });
+
+        (port, handle)
+    }
 
     #[test]
     fn test_find_header_end_with_complete_headers() {
@@ -241,16 +338,178 @@ mod tests {
         assert_eq!(find_header_end(b"\r\n\r\n"), Some(4));
     }
 
-    // TODO: Add integration tests with mock proxy server
-    // These tests require a real TCP server implementing HTTP CONNECT and SOCKS5.
-    // For now, we test the helper functions only.
-    //
-    // Future tests needed:
-    // - test_http_connect_handshake_success
-    // - test_http_connect_handshake_failure
-    // - test_http_connect_handshake_timeout
-    // - test_socks5_handshake_success
-    // - test_socks5_handshake_auth_required
-    // - test_socks5_handshake_connection_refused
-    // - test_connect_through_proxy_fallback
+    // === Integration tests with mock proxy servers ===
+
+    #[tokio::test]
+    async fn test_http_connect_success() {
+        let (port, _handle) = mock_http_proxy(200).await;
+        let proxy = Proxy::new("127.0.0.1".to_string(), port, Protocol::Http);
+
+        let result = connect_through_proxy(
+            &proxy,
+            "example.com",
+            80,
+            Duration::from_secs(5),
+        ).await;
+
+        assert!(result.is_ok(), "HTTP CONNECT should succeed, got: {:?}", result.err());
+
+        // Verify the tunnel works — send data and get echo
+        let mut stream = result.unwrap();
+        stream.write_all(b"hello").await.unwrap();
+        let mut buf = [0u8; 5];
+        let n = tokio::time::timeout(
+            Duration::from_secs(2),
+            stream.read(&mut buf),
+        ).await.unwrap().unwrap();
+        assert_eq!(&buf[..n], b"hello");
+    }
+
+    #[tokio::test]
+    async fn test_http_connect_rejected() {
+        let (port, _handle) = mock_http_proxy(403).await;
+        let proxy = Proxy::new("127.0.0.1".to_string(), port, Protocol::Http);
+
+        let result = connect_through_proxy(
+            &proxy,
+            "example.com",
+            80,
+            Duration::from_secs(5),
+        ).await;
+
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("403"), "Error should mention 403, got: {}", err);
+    }
+
+    #[tokio::test]
+    async fn test_http_connect_timeout() {
+        // Connect to a non-routable IP to trigger timeout
+        let proxy = Proxy::new("192.0.2.1".to_string(), 1, Protocol::Http);
+
+        let result = connect_through_proxy(
+            &proxy,
+            "example.com",
+            80,
+            Duration::from_millis(100),
+        ).await;
+
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("timed out") || err.contains("failed"),
+            "Should timeout, got: {}", err
+        );
+    }
+
+    #[tokio::test]
+    async fn test_socks5_handshake_success() {
+        let (port, _handle) = mock_socks5_proxy(true).await;
+        let proxy = Proxy::new("127.0.0.1".to_string(), port, Protocol::Socks5);
+
+        let result = connect_through_proxy(
+            &proxy,
+            "example.com",
+            80,
+            Duration::from_secs(5),
+        ).await;
+
+        assert!(result.is_ok(), "SOCKS5 should succeed, got: {:?}", result.err());
+
+        // Verify tunnel echo
+        let mut stream = result.unwrap();
+        stream.write_all(b"world").await.unwrap();
+        let mut buf = [0u8; 5];
+        let n = tokio::time::timeout(
+            Duration::from_secs(2),
+            stream.read(&mut buf),
+        ).await.unwrap().unwrap();
+        assert_eq!(&buf[..n], b"world");
+    }
+
+    #[tokio::test]
+    async fn test_socks5_connection_refused() {
+        let (port, _handle) = mock_socks5_proxy(false).await;
+        let proxy = Proxy::new("127.0.0.1".to_string(), port, Protocol::Socks5);
+
+        let result = connect_through_proxy(
+            &proxy,
+            "example.com",
+            80,
+            Duration::from_secs(5),
+        ).await;
+
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("refused"), "Error should mention refused, got: {}", err);
+    }
+
+    #[tokio::test]
+    async fn test_connect_to_target_uses_correct_protocol() {
+        // HTTP proxy
+        let (http_port, _h1) = mock_http_proxy(200).await;
+        let http_proxy = Proxy::new("127.0.0.1".to_string(), http_port, Protocol::Http);
+        assert!(connect_to_target(&http_proxy, "example.com", 80).await.is_ok());
+
+        // SOCKS5 proxy
+        let (socks_port, _h2) = mock_socks5_proxy(true).await;
+        let socks_proxy = Proxy::new("127.0.0.1".to_string(), socks_port, Protocol::Socks5);
+        assert!(connect_to_target(&socks_proxy, "example.com", 80).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_http_connect_server_closes_connection() {
+        // Server that accepts and immediately closes
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            if let Ok((stream, _)) = listener.accept().await {
+                drop(stream); // close immediately
+            }
+        });
+
+        let proxy = Proxy::new("127.0.0.1".to_string(), port, Protocol::Http);
+        let result = connect_through_proxy(&proxy, "example.com", 80, Duration::from_secs(5)).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_socks5_wrong_version_response() {
+        // Server that returns wrong SOCKS version
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            if let Ok((mut stream, _)) = listener.accept().await {
+                let mut buf = [0u8; 3];
+                let _ = stream.read_exact(&mut buf).await;
+                // Return SOCKS4 version instead of 5
+                let _ = stream.write_all(&[0x04, 0x00]).await;
+            }
+        });
+
+        let proxy = Proxy::new("127.0.0.1".to_string(), port, Protocol::Socks5);
+        let result = connect_through_proxy(&proxy, "example.com", 80, Duration::from_secs(5)).await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("wrong version"));
+    }
+
+    #[tokio::test]
+    async fn test_socks5_no_acceptable_auth() {
+        // Server that says no acceptable auth
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            if let Ok((mut stream, _)) = listener.accept().await {
+                let mut buf = [0u8; 3];
+                let _ = stream.read_exact(&mut buf).await;
+                // Return 0xFF = no acceptable methods
+                let _ = stream.write_all(&[0x05, 0xFF]).await;
+            }
+        });
+
+        let proxy = Proxy::new("127.0.0.1".to_string(), port, Protocol::Socks5);
+        let result = connect_through_proxy(&proxy, "example.com", 80, Duration::from_secs(5)).await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("auth"));
+    }
 }

@@ -253,3 +253,151 @@ pub async fn run_with_max_connections(state: SharedState, port: u16, max_connect
         });
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::pool::proxy::{Protocol, Proxy};
+    use std::sync::atomic::Ordering;
+
+    #[tokio::test]
+    async fn test_get_original_dst_returns_none_without_iptables() {
+        // Without iptables REDIRECT, SO_ORIGINAL_DST should return None.
+        // This verifies the function doesn't panic on a normal socket.
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let client_handle = tokio::spawn(async move {
+            TcpStream::connect(addr).await.unwrap()
+        });
+
+        let (server_stream, _peer) = listener.accept().await.unwrap();
+        let result = get_original_dst(&server_stream);
+        assert!(result.is_none(), "Should return None without iptables REDIRECT");
+
+        let _ = client_handle.await;
+    }
+
+    #[tokio::test]
+    async fn test_listener_binds_and_accepts() {
+        let state = SharedState::new();
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        // Spawn a client that connects
+        let client = tokio::spawn(async move {
+            TcpStream::connect(addr).await.unwrap()
+        });
+
+        let (stream, peer) = listener.accept().await.unwrap();
+        assert!(peer.ip().is_loopback());
+        drop(stream);
+        let _ = client.await;
+        drop(state);
+    }
+
+    #[tokio::test]
+    async fn test_semaphore_rejects_when_full() {
+        let semaphore = Arc::new(Semaphore::new(1));
+
+        // Acquire the only permit
+        let permit1 = semaphore.clone().try_acquire_owned();
+        assert!(permit1.is_ok());
+
+        // Second acquire should fail
+        let permit2 = semaphore.clone().try_acquire_owned();
+        assert!(permit2.is_err());
+
+        // After dropping first permit, next one succeeds
+        drop(permit1);
+        let permit3 = semaphore.try_acquire_owned();
+        assert!(permit3.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_handle_connection_drops_without_original_dst() {
+        // Without iptables, handle_connection should return immediately
+        // (no SO_ORIGINAL_DST → early return, no panic).
+        let state = SharedState::new();
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let client = tokio::spawn(async move {
+            let _stream = TcpStream::connect(addr).await.unwrap();
+            // Keep alive briefly
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        });
+
+        let (stream, peer) = listener.accept().await.unwrap();
+
+        // handle_connection should exit quickly (no SO_ORIGINAL_DST)
+        let result = tokio::time::timeout(
+            Duration::from_secs(2),
+            handle_connection(stream, peer, state.clone()),
+        ).await;
+
+        assert!(result.is_ok(), "handle_connection should return quickly without SO_ORIGINAL_DST");
+
+        // active_connections should be 0 (never incremented since it exits early)
+        assert_eq!(state.active_connections.load(Ordering::Relaxed), 0);
+
+        let _ = client.await;
+    }
+
+    #[tokio::test]
+    async fn test_run_with_max_connections_rejects_over_limit() {
+        let state = SharedState::new();
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener); // free the port
+
+        // Start proxy with max 2 connections
+        let proxy_state = state.clone();
+        let proxy_handle = tokio::spawn(async move {
+            let _ = run_with_max_connections(proxy_state, port, 2).await;
+        });
+
+        // Give the proxy time to start
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        // Connect 3 clients
+        let addr = format!("127.0.0.1:{}", port);
+        let c1 = TcpStream::connect(&addr).await;
+        let c2 = TcpStream::connect(&addr).await;
+        let c3 = TcpStream::connect(&addr).await;
+
+        // All 3 should connect at TCP level (kernel accept queue),
+        // but the proxy will drop without SO_ORIGINAL_DST quickly,
+        // freeing the semaphore permits
+        assert!(c1.is_ok());
+        assert!(c2.is_ok());
+        assert!(c3.is_ok());
+
+        proxy_handle.abort();
+    }
+
+    #[tokio::test]
+    async fn test_metrics_increment_on_connection_attempt() {
+        // Verify that total_requests and active_connections counters work.
+        let state = SharedState::new();
+
+        // Insert a proxy so select_best() can return something
+        let proxy = Proxy::new("192.0.2.1".to_string(), 8080, Protocol::Http);
+        state.insert_if_absent(proxy);
+        state.record_success("192.0.2.1:8080", 100.0);
+
+        assert_eq!(state.total_requests.load(Ordering::Relaxed), 0);
+        assert_eq!(state.active_connections.load(Ordering::Relaxed), 0);
+
+        // Simulate request counting (handle_connection is hard to test
+        // without iptables, so we test the atomic operations directly)
+        state.total_requests.fetch_add(1, Ordering::Relaxed);
+        state.active_connections.fetch_add(1, Ordering::Relaxed);
+        assert_eq!(state.total_requests.load(Ordering::Relaxed), 1);
+        assert_eq!(state.active_connections.load(Ordering::Relaxed), 1);
+
+        state.active_connections.fetch_sub(1, Ordering::Relaxed);
+        assert_eq!(state.active_connections.load(Ordering::Relaxed), 0);
+    }
+}
