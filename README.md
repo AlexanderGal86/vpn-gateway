@@ -1,180 +1,570 @@
 # VPN Gateway
 
-Transparent TCP proxy gateway с динамическим пулом free прокси, WireGuard VPN и защитой от DNS-утечек.
+Transparent TCP/UDP proxy gateway with a dynamic pool of free proxy servers, WireGuard VPN tunneling, and DNS leak protection. Built in Rust for high performance and reliability.
 
-## Что это
+## Overview
 
-Rust-приложение, которое проксирует TCP-трафик через пул бесплатных прокси (1000+ из публичных списков), автоматически проверяя их работоспособность и выбирая лучшие по latency. UDP-трафик идёт напрямую через WireGuard VPN.
+VPN Gateway automatically discovers, validates, and rotates through 1000+ free proxy servers from public lists. TCP traffic from WireGuard clients is transparently proxied through the best-performing servers, selected via EWMA latency scoring and circuit breaker patterns. UDP traffic (including DNS) is relayed through a dedicated channel with Unbound DNS resolver for leak prevention.
 
-## Быстрый старт
+### Key Features
+
+- **Transparent proxying** — iptables REDIRECT + `SO_ORIGINAL_DST` for zero-config client setup
+- **Smart proxy selection** — EWMA-weighted latency scoring with Top-N random selection
+- **Circuit breaker** — Escalating backoff (60s → 300s → 3600s → permanent ban) for failing proxies
+- **4-level fast startup** — Instant state restore → fast bootstrap → full refresh → continuous health checks
+- **Protocol support** — HTTP CONNECT and SOCKS5 upstream, TLS SNI extraction for routing
+- **Connection pooling** — Optional TCP connection reuse to reduce handshake overhead
+- **Sticky sessions** — TTL-based client-to-proxy affinity
+- **GeoIP filtering** — Country-based proxy selection via API or local MaxMind/DB-IP database
+- **Hot-reload config** — File watcher with automatic config reload (no restart needed)
+- **Prometheus metrics** — Native `/metrics` endpoint for monitoring
+- **WireGuard integration** — Auto-configured VPN with QR code client provisioning
+- **UPnP port forwarding** — Automatic router configuration for remote access
+- **Per-source caps** — Max 500 proxies per source to prevent pool flooding
+- **Bounded concurrency** — Semaphore-based limits on connections, UDP tasks, and GeoIP lookups
+
+---
+
+## Architecture
+
+### Docker Service Topology
+
+```
+                    ┌──────────────────────────────────────────────────────────────┐
+                    │                    Docker Host                               │
+                    │                                                              │
+ Internet ◄────────┤  ┌─────────────────────────────────────────────────────────┐  │
+   :51820/udp       │  │  wireguard (linuxserver/wireguard)                     │  │
+                    │  │  ├── wg0: 10.13.13.0/24 (VPN subnet)                  │  │
+                    │  │  ├── iptables REDIRECT → :1080 (TCP) / :1081 (UDP)    │  │
+                    │  │  │                                                     │  │
+                    │  │  │  ┌─────────────────────────────────────────────┐    │  │
+                    │  │  │  │  vpn-gateway (Rust)  [network_mode: service]│    │  │
+                    │  │  │  │  ├── :1080  Transparent TCP Proxy           │    │  │
+                    │  │  │  │  ├── :1081  UDP Relay                       │    │  │
+                    │  │  │  │  └── :8080  REST API / Metrics              │    │  │
+                    │  │  │  └─────────────────────────────────────────────┘    │  │
+                    │  │  │  ┌─────────────────────────────────────────────┐    │  │
+                    │  │  │  │  unbound (DNS)       [network_mode: service]│    │  │
+                    │  │  │  │  └── :53   Recursive DNS resolver           │    │  │
+                    │  │  │  └─────────────────────────────────────────────┘    │  │
+                    │  │  └─────────────────────────────────────────────────────┘  │
+                    │  │                        │                                  │
+                    │  │              vpn-internal (bridge 172.20.0.0/24)          │
+                    │  │                        │                                  │
+                    │  │  ┌─────────────────────┴──────────────────────────────┐   │
+                    │  │  │  net-manager (Python)                              │   │
+                    │  │  │  ├── :8088  Config server (Flask)                  │   │
+                    │  │  │  ├── UPnP IGD port forwarding                     │   │
+                    │  │  │  ├── DHCP IP acquisition                          │   │
+                    │  │  │  └── WireGuard config + QR code generation        │   │
+                    │  │  └────────────────────────────────────────────────────┘   │
+                    │  │                        │                                  │
+                    │  │              ext_net (macvlan on physical NIC)            │
+                    │  │                        │                                  │
+                    │  └────────────────────────┼──────────────────────────────────┘
+                    │                           │                                  │
+                    └───────────────────────────┼──────────────────────────────────┘
+                                                │
+                                           LAN / Router
+```
+
+### Traffic Flow
+
+```
+  WireGuard Client                VPN Gateway                    Internet
+  ──────────────                  ───────────                    ────────
+        │                              │                             │
+        │  TCP connection              │                             │
+        ├─────────────────────────────►│                             │
+        │  (iptables REDIRECT :1080)   │                             │
+        │                              │  1. SO_ORIGINAL_DST         │
+        │                              │  2. TLS SNI extraction      │
+        │                              │  3. Sticky session lookup   │
+        │                              │  4. Select best proxy       │
+        │                              │     (EWMA + Top-N)          │
+        │                              │  5. HTTP CONNECT / SOCKS5   │
+        │                              ├────────────────────────────►│
+        │                              │  6. Bidirectional relay     │
+        │◄─────────────────────────────┤◄────────────────────────────│
+        │                              │                             │
+        │  UDP / DNS                   │                             │
+        ├─────────────────────────────►│                             │
+        │  (iptables REDIRECT :1081)   │  Direct relay + Unbound    │
+        │◄─────────────────────────────┤◄────────────────────────────│
+```
+
+### Proxy Lifecycle
+
+```
+  ┌──────────────┐     ┌──────────────┐     ┌──────────────┐     ┌──────────────┐
+  │  Discovery   │────►│  Validation  │────►│   Active     │────►│   Retired    │
+  │              │     │              │     │              │     │              │
+  │ 11+ public   │     │ Fast probe   │     │ EWMA scoring │     │ Circuit      │
+  │ source lists │     │ (3s timeout) │     │ Top-N select │     │ breaker      │
+  │ + custom     │     │ TCP connect  │     │ Health check │     │ escalation   │
+  │ sources.json │     │ + HTTP test  │     │ loop (30s)   │     │ or stale     │
+  └──────────────┘     └──────────────┘     └──────────────┘     └──────────────┘
+         │                                         │                     │
+         │              ┌──────────────┐           │                     │
+         │              │  Persisted   │◄──────────┘                     │
+         │              │  state.json  │           (every 300s)          │
+         │              │  (Level 0    │                                 │
+         └──────────────│   restore)   │─────────── banned list ────────┘
+                        └──────────────┘
+```
+
+---
+
+## Technology Stack
+
+### Core (Rust)
+
+| Crate | Version | Purpose |
+|-------|---------|---------|
+| **tokio** | 1.x | Async runtime (full features: rt-multi-thread, io, net, time, sync, macros) |
+| **axum** | 0.7 | HTTP API framework (REST endpoints, JSON, routing) |
+| **dashmap** | 6.x | Lock-free concurrent HashMap (proxy pool state) |
+| **reqwest** | 0.12 | HTTP client with rustls-tls (source fetching, health checks) |
+| **serde** / **serde_json** | 1.x | Serialization/deserialization (config, state, API) |
+| **tokio::sync** | — | Semaphore, RwLock, Notify, mpsc channels |
+| **futures** | 0.3 | FuturesUnordered for concurrent source fetching |
+| **bytes** | 1.x | Efficient byte buffer manipulation |
+
+### Networking & System
+
+| Crate / Tech | Purpose |
+|--------------|---------|
+| **nix** 0.29 | `SO_ORIGINAL_DST` socket option (transparent proxy) |
+| **libc** 0.2 | Low-level `getsockopt` for original destination extraction |
+| **tower-http** 0.6 | CORS middleware for API |
+| **iptables** | Traffic redirection (REDIRECT target for TCP/UDP) |
+
+### Observability & Reliability
+
+| Crate | Purpose |
+|-------|---------|
+| **tracing** 0.1 | Structured logging (spans, events, levels) |
+| **tracing-subscriber** 0.3 | Log formatting with env-filter (`RUST_LOG`) |
+| **chrono** 0.4 | Timestamps for proxy scoring and session TTL |
+| **anyhow** 1.x | Ergonomic error handling (application-level) |
+| **thiserror** 2.x | Derive-based error types (library-level) |
+
+### Configuration & State
+
+| Crate | Purpose |
+|-------|---------|
+| **notify** 6.x | Filesystem watcher for config hot-reload |
+| **parking_lot** 0.12 | Faster Mutex/RwLock for connection pool |
+| **rand** 0.8 | Weighted random proxy selection |
+
+### Build & Optimization
+
+| Setting | Value | Purpose |
+|---------|-------|---------|
+| `opt-level` | 3 | Maximum optimization |
+| `lto` | fat | Link-time optimization (cross-crate inlining) |
+| `codegen-units` | 1 | Single codegen unit for better optimization |
+| `panic` | abort | No unwinding overhead |
+| `strip` | true | Remove debug symbols from release binary |
+
+### Python (net-manager sidecar)
+
+| Package | Version | Purpose |
+|---------|---------|---------|
+| **Flask** | 3.1 | HTTP server for config distribution (:8088) |
+| **miniupnpc** | 2.2 | UPnP IGD port forwarding to router |
+| **qrcode[pil]** | 8.x | QR code generation for WireGuard client configs |
+| **Jinja2** | 3.1 | Template rendering for WireGuard configs |
+
+### Infrastructure
+
+| Technology | Purpose |
+|------------|---------|
+| **Docker** 24.0+ | Containerization |
+| **Docker Compose** v2 | Multi-service orchestration |
+| **WireGuard** | VPN tunnel (linuxserver/wireguard image) |
+| **Unbound** | Recursive DNS resolver (DNS leak prevention) |
+| **macvlan** | Docker network driver for LAN IP acquisition |
+| **bridge** | Internal Docker network (172.20.0.0/24) |
+
+### Protocols
+
+| Protocol | Usage |
+|----------|-------|
+| **HTTP CONNECT** | Upstream proxy tunneling (RFC 7231) |
+| **SOCKS5** | Upstream proxy tunneling (RFC 1928) |
+| **TLS 1.2/1.3** | SNI extraction from ClientHello for routing |
+| **WireGuard** | VPN tunnel (Noise protocol framework) |
+| **DNS over UDP** | Unbound recursive resolution |
+| **UPnP IGD** | Automatic router port forwarding |
+| **DHCP** | net-manager LAN IP acquisition |
+
+---
+
+## Quick Start
+
+### Prerequisites
+
+- **Docker** 24.0+ with Docker Compose v2
+- **Linux host** (iptables required for transparent proxying)
+- **Open port**: UDP 51820 (WireGuard)
+
+### 1. Clone and configure
 
 ```bash
-# Локальная разработка
-make build && make run
+git clone https://github.com/alexandergal86/vpn-gateway.git
+cd vpn-gateway
+cp .env.example .env
+```
 
-# Docker (локальная сеть)
-make docker-local-up
+Edit `.env` to match your network:
 
-# Docker (VPS с WireGuard + net-manager)
+```bash
+# Physical NIC (ip link show)
+NET_INTERFACE=eth0
+
+# Your LAN settings
+LAN_SUBNET=192.168.1.0/24
+LAN_GATEWAY=192.168.1.1
+
+# IP range outside DHCP pool for macvlan
+MACVLAN_IP_RANGE=192.168.1.200/29
+
+# Number of WireGuard peers to generate
+WG_PEERS=2
+```
+
+### 2. Deploy
+
+```bash
+# Production (VPS with UPnP + macvlan)
 make docker-full-up
+
+# Local development (no macvlan)
+make docker-dev-up
+
+# Minimal (local network, no net-manager)
+make docker-local-up
 ```
 
-## Статус
-
-| Компонент | Статус |
-|-----------|--------|
-| Компиляция | ✅ Работает, 0 warnings |
-| Тесты | ✅ 72/72 |
-| API | ✅ :8080 |
-| Proxy pool | ✅ :1080, 2-stage verification |
-| UDP relay | ✅ :1081, Unbound DNS |
-| GeoIP | ✅ API + lazy lookup |
-| Sticky Sessions | ✅ TTL-based |
-| Connection Pool | ✅ (отключаемый) |
-| WireGuard | ✅ Auto-detect IP |
-| Docker | ✅ Протестировано |
-| net-manager | ✅ UPnP + DHCP + config gen |
-| Config hot-reload | ✅ notify crate |
-| Weighted proxy selection | ✅ Top-N random |
-| Idle timeout | ✅ 300s на relay |
-| Source retry + rate limit | ✅ |
-
-## Makefile
+### 3. Connect WireGuard clients
 
 ```bash
-make help              # Справка
-make build             # Сборка (cargo build --release)
-make test              # Тесты
-make run               # Локальный запуск
-make clean             # Очистка
-make geoip-update      # Скачать GeoLite2-City (~68MB)
-make geoip-update-dbip # Скачать DB-IP City Lite (~19MB)
-make docker-up         # Docker (VPS режим)
-make docker-down       # Остановить VPS
-make docker-local-up   # Docker (локальная сеть)
-make docker-local-down # Остановить локальный
-make docker-full-up    # Полный стек (VPS + net-manager + UPnP)
-make docker-full-down  # Остановить полный стек
-make docker-dev-up     # Dev режим (без macvlan)
-make docker-dev-down   # Остановить dev
-make wg-keygen         # Генерация WireGuard ключей
-make wg-show-configs   # Показать конфиги клиентов
-make status            # Статус контейнеров + proxy count
-make backup            # Бэкап state и конфигов
-make update            # Pull + rebuild
-make client            # QR код WireGuard
-make shell             # Shell в контейнере
-make test-connection   # Тест через прокси
+# Show QR codes for mobile clients
+make client
+
+# Or view generated configs
+make wg-show-configs
 ```
 
-## WireGuard
+Scan the QR code with the WireGuard mobile app, or import the `.conf` file on desktop.
+
+### 4. Verify
 
 ```bash
-# Генерация ключей (автоопределение IP)
-./scripts/generate_wg_keys.sh peer1
+# Check gateway health
+curl http://localhost:8080/health
 
-# Несколько пиров
-./scripts/generate_wg_keys.sh --peers 3
+# Check proxy count
+make status
 
-# Только ключи, без конфигов
-./scripts/generate_wg_keys.sh --no-config peer1
+# Test connection through proxy
+make test-connection
 ```
 
-## API Endpoints
+---
 
-```
-GET  /health              → {"status":"ok","total_proxies":N,...}
-GET  /api/metrics         → JSON метрики
-GET  /metrics             → Prometheus формат
-GET  /api/proxies         → [{host,port,latency_ms,...},...]
-POST /api/proxy/add       → {"host":"1.2.3.4","port":8080}
-POST /api/proxy/ban/:key  → забанить прокси
-POST /api/proxy/unban/:key → разбанить прокси
-GET  /api/network-status  → LAN/WAN IP, UPnP статус (от net-manager)
-GET  /api/wg/peers        → список WireGuard пиров
-```
+## Usage
 
-## GeoIP
+### Local Development (without Docker)
 
 ```bash
-# API lookup
-curl https://geo.wp-statistics.com/8.8.8.8?format=json
+# Build release binary
+make build
 
-# Скачать базу локально
-make geoip-update        # GeoLite2-City (~68MB)
-make geoip-update-dbip   # DB-IP City Lite (~19MB)
+# Run with debug logging (creates data/ directory)
+make run
+
+# Run tests
+make test
+
+# Lint + format check + tests
+make check
 ```
 
-## Конфигурация
+Override config path:
 
-### config/gateway.json
+```bash
+CONFIG_PATH=path/to/custom.json cargo run
+```
+
+### Docker Deployment Modes
+
+| Mode | Command | Use Case |
+|------|---------|----------|
+| **Full** | `make docker-full-up` | Production VPS with UPnP + macvlan |
+| **Dev** | `make docker-dev-up` | Development without macvlan |
+| **Local** | `make docker-local-up` | Local network, no net-manager |
+| **VPS** | `make docker-up` | Basic VPS deployment |
+
+### Configuration
+
+#### config/gateway.json
+
 ```json
 {
   "gateway_port": 1080,
   "api_port": 8080,
   "udp_port": 1081,
+  "max_proxies": 5000,
   "max_connections": 10000,
+  "health_check_interval": 30,
+  "source_update_interval": 300,
+  "preferred_countries": ["US", "DE", "NL"],
+  "geoip_path": "data/GeoLite2-City.mmdb",
+  "state_path": "data/state.json",
+  "sources_path": "config/sources.json",
+  "connection_pool_max_idle": 60,
+  "connection_pool_max_per_proxy": 10,
   "enable_connection_pool": false,
-  "sources_path": "config/sources.json"
+  "sticky_session_ttl": 300,
+  "enable_sticky_sessions": false
 }
 ```
 
-### config/sources.json
-11 публичных источников (HTTP + SOCKS5), обновление каждые 5 минут.
+All fields have sane defaults. The config supports hot-reload — changes are picked up automatically.
 
-## Архитектура
+#### config/sources.json
 
-```
-┌─────────────────────────────────────────────────────┐
-│                DOCKER CONTAINER                      │
-│                                                      │
-│  WireGuard (wg0, 10.13.13.1)                       │
-│       │                                              │
-│       │ iptables REDIRECT                            │
-│       ▼                                              │
-│  Rust Gateway (:1080)                                │
-│       │                                              │
-│       ├─ SNI sniffing (извлечь домен из TLS)         │
-│       ├─ Sticky Sessions (привязка клиента к прокси) │
-│       ├─ ProxyPool (DashMap, EWMA scoring)          │
-│       ├─ Upstream handshake (CONNECT / SOCKS5)       │
-│       └─ copy_bidirectional (relay данных)           │
-│       │                                              │
-│       ▼                                              │
-│  Free Proxy (1000+ из публичных списков) → Internet │
-│                                                      │
-│  UDP Relay (:1081) — DNS и UDP                      │
-│  Web API (:8080) — мониторинг                        │
-│  net-manager (:8088) — UPnP + DHCP + QR             │
-└─────────────────────────────────────────────────────┘
+```json
+{
+  "sources": [
+    "https://api.proxyscrape.com/v2/?request=getproxies&protocol=http&timeout=5000&country=all",
+    "https://raw.githubusercontent.com/TheSpeedX/PROXY-List/master/http.txt",
+    "https://raw.githubusercontent.com/monosans/proxy-list/main/proxies/http.txt",
+    "https://api.proxyscrape.com/v2/?request=getproxies&protocol=socks5&timeout=5000&country=all",
+    "https://raw.githubusercontent.com/TheSpeedX/PROXY-List/master/socks5.txt"
+  ]
+}
 ```
 
-## Технологии
+11 built-in sources are used as fallback if the file is missing or malformed.
 
-- **Rust** (Edition 2021), **Tokio** async runtime
-- **DashMap** — lock-free concurrent state
-- **reqwest** (rustls-tls) — HTTP client
-- **Axum** — Web API
-- **tracing** — логирование
-- **nix** — SO_ORIGINAL_DST (Linux)
-- **notify** — config file watching
-- **rand** — weighted random proxy selection
-- **Python** (net-manager) — UPnP, DHCP, QR generation
+### API Reference
 
-## Требования к серверу
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `GET` | `/health` | Health check with proxy counts and uptime |
+| `GET` | `/api/metrics` | JSON metrics (pool size, latency stats, bans) |
+| `GET` | `/metrics` | Prometheus-format metrics |
+| `GET` | `/api/proxies` | List active proxies with latency, country, status |
+| `POST` | `/api/proxy/add` | Add proxy manually: `{"host":"1.2.3.4","port":8080}` |
+| `POST` | `/api/proxy/ban/:key` | Ban proxy (key = `host:port`) |
+| `POST` | `/api/proxy/unban/:key` | Unban proxy |
+| `GET` | `/api/network-status` | LAN/WAN IP, UPnP status (from net-manager) |
+| `GET` | `/api/wg/peers` | WireGuard peer list |
 
-- **VPS**: 1 vCPU, 512 MB RAM, 10 GB диск
-- **OS**: Ubuntu 22.04+ или Debian 12+
-- **Открытые порты**: UDP 51820 (WireGuard)
-- **Docker**: 24.0+ и Docker Compose v2
+#### Examples
+
+```bash
+# Health check
+curl -s http://localhost:8080/health | jq .
+# {"status":"ok","total_proxies":847,"healthy_proxies":312,"banned_proxies":15,...}
+
+# List top proxies by latency
+curl -s http://localhost:8080/api/proxies | jq '.[0:5]'
+
+# Add a custom proxy
+curl -X POST http://localhost:8080/api/proxy/add \
+  -H 'Content-Type: application/json' \
+  -d '{"host":"1.2.3.4","port":8080,"protocol":"http"}'
+
+# Ban a misbehaving proxy
+curl -X POST http://localhost:8080/api/proxy/ban/1.2.3.4:8080
+
+# Prometheus scrape
+curl -s http://localhost:8080/metrics
+# vpn_proxies_total 847
+# vpn_proxies_healthy 312
+# vpn_proxies_banned 15
+```
+
+### GeoIP Setup
+
+```bash
+# Option 1: GeoLite2-City (~68MB, more detailed)
+make geoip-update
+
+# Option 2: DB-IP City Lite (~19MB, compact)
+make geoip-update-dbip
+```
+
+Then set `geoip_path` in `config/gateway.json`:
+
+```json
+{
+  "geoip_path": "data/GeoLite2-City.mmdb",
+  "preferred_countries": ["US", "DE", "NL"]
+}
+```
+
+Without a local database, GeoIP falls back to the `geo.wp-statistics.com` API.
+
+### WireGuard Client Setup
+
+```bash
+# Generate keys for a new peer
+./scripts/generate_wg_keys.sh peer1
+
+# Generate multiple peers
+./scripts/generate_wg_keys.sh --peers 3
+
+# Keys only (no config files)
+./scripts/generate_wg_keys.sh --no-config peer1
+```
+
+Generated configs are placed in `data/clients/`:
+- `peer1-lan.conf` — for clients on the same LAN
+- `peer1-wan.conf` — for remote clients (uses UPnP-discovered external IP)
+- `peer1-lan.png` / `peer1-wan.png` — QR codes for mobile
+
+### Maintenance
+
+```bash
+# View container status and proxy count
+make status
+
+# View logs
+make docker-logs
+
+# Open shell in gateway container
+make shell
+
+# Backup state and configs
+make backup
+
+# Update to latest version
+make update
+```
+
+---
+
+## Startup Sequence
+
+The gateway uses a 4-level fast-start strategy to minimize time-to-first-connection:
+
+| Level | Timing | Action |
+|-------|--------|--------|
+| **0** | Instant | Load persisted proxy state from `data/state.json` |
+| **1** | ~3-5s | Bootstrap from top 3 sources (20 proxies each), fast probe (3s timeout) |
+| **2** | Background | Full refresh from all sources in `config/sources.json` |
+| **3** | Continuous | Health check loop (30s) + state persistence (300s) |
+
+If the pool is empty at startup, the TCP listener waits on a `Notify` signal until the first healthy proxy becomes available.
+
+---
+
+## Ports
+
+| Port | Protocol | Service |
+|------|----------|---------|
+| 1080 | TCP | Transparent TCP proxy (gateway) |
+| 1081 | UDP | UDP relay (gateway) |
+| 8080 | TCP | REST API and Prometheus metrics (gateway) |
+| 8088 | TCP | Config server (net-manager) |
+| 51820 | UDP | WireGuard VPN tunnel |
+| 53 | UDP | Unbound DNS resolver |
+
+---
+
+## Data Directory
+
+```
+data/
+├── wg/                  # WireGuard server config (auto-generated)
+├── clients/             # Generated client configs + QR codes
+│   ├── peer1-lan.conf
+│   ├── peer1-wan.conf
+│   ├── peer1-lan.png
+│   └── peer1-wan.png
+├── state.json           # Proxy pool state (auto-saved every 300s)
+└── network-status.json  # Current IPs, UPnP status (net-manager)
+```
+
+---
+
+## Server Requirements
+
+| Requirement | Minimum | Recommended |
+|-------------|---------|-------------|
+| **CPU** | 1 vCPU | 2 vCPU |
+| **RAM** | 512 MB | 1 GB |
+| **Disk** | 10 GB | 20 GB |
+| **OS** | Ubuntu 22.04+ / Debian 12+ | Ubuntu 24.04 LTS |
+| **Docker** | 24.0+ | Latest stable |
+| **Open ports** | UDP 51820 | UDP 51820 |
+
+---
+
+## Makefile Reference
+
+```bash
+# Core
+make build              # cargo build --release
+make test               # Run all tests (85 tests)
+make run                # Run locally with debug logging
+make clean              # cargo clean
+make lint               # clippy -D warnings
+make fmt                # Check formatting
+make fmt-fix            # Auto-fix formatting
+make check              # lint + fmt + test
+
+# Docker
+make docker-up          # VPS mode
+make docker-down        # Stop VPS
+make docker-local-up    # Local network mode
+make docker-local-down  # Stop local
+make docker-full-up     # Full stack (VPS + net-manager + UPnP)
+make docker-full-down   # Stop full stack
+make docker-dev-up      # Dev mode (no macvlan)
+make docker-dev-down    # Stop dev
+make docker-logs        # Follow logs
+
+# Utilities
+make status             # Container status + proxy count
+make backup             # Backup state and configs
+make update             # Pull latest + rebuild
+make client             # WireGuard client QR code
+make shell              # Shell in gateway container
+make test-connection    # Test SOCKS5 proxy
+make wg-keygen          # Generate WireGuard keys
+make wg-show-configs    # Show client configs
+
+# GeoIP
+make geoip-update       # GeoLite2-City (~68MB)
+make geoip-update-dbip  # DB-IP City Lite (~19MB)
+```
+
+---
 
 ## Troubleshooting
 
-| Ошибка | Решение |
-|--------|---------|
-| `nix` не компилируется | Используйте Docker |
-| NET_ADMIN недоступен | Требуется `--cap-add=NET_ADMIN` |
-| Port already in use | Измените порт в config/gateway.json |
-| WireGuard не стартует | Проверьте wg-quick и wg0.conf |
-| DNS утечки | Проверьте iptables REDIRECT + Unbound |
-| Прокси не загружаются | Контейнер без интернета — fallback на state.json |
+| Problem | Solution |
+|---------|----------|
+| `nix` crate won't compile | Use Docker (requires Linux kernel headers) |
+| `NET_ADMIN` capability error | Add `--cap-add=NET_ADMIN` to Docker or run as root |
+| Port already in use | Change port in `config/gateway.json` (hot-reload supported) |
+| WireGuard won't start | Check `wg-quick` installation and `wg0.conf` syntax |
+| DNS leaks | Verify iptables REDIRECT rules + Unbound is running |
+| No proxies loading | Check internet access in container; falls back to `state.json` |
+| macvlan not working | Ensure `NET_INTERFACE` in `.env` matches `ip link show` output |
+| UPnP fails | Router may not support IGD; use manual port forwarding |
+| High latency | Enable `preferred_countries` to filter by geography |
+| Connection drops | Increase `max_connections` or enable `connection_pool` |
+
+---
+
+## License
+
+MIT
