@@ -464,9 +464,20 @@ All 5 stages implemented and verified:
 | 4. Hardening | DONE | — | Per-source cap 500, connect timeout, accurate insert count |
 | 5. Tests | DONE | +11 | 85 total tests, 0 clippy warnings, Makefile lint/fmt/check |
 
-### Remaining opportunities (not in original plan)
+### Future Work
 
-- M3: IPv6 SO_ORIGINAL_DST support (`sockaddr_in6`)
-- L4: Config watcher proper lifetime (replace sleep loop)
-- L5: Python path traversal sanitization in web_server.py
-- Benchmarks: `cargo bench` for select_best() and hot paths
+#### Tests
+- [ ] Integration tests for persistence module (requires temp directory setup)
+- [ ] Integration tests for transparent proxy (requires TCP listener + SO_ORIGINAL_DST)
+- [ ] Integration tests for upstream handshake (requires mock HTTP/SOCKS5 proxy)
+- [ ] Benchmarks: `cargo bench` for `collect_top_n()`, EWMA scoring, and hot paths
+
+#### Features
+- [ ] IPv6 SO_ORIGINAL_DST support (`sockaddr_in6` in `transparent.rs`)
+- [ ] DDNS integration for WAN configs (alternative to UPnP external IP)
+- [ ] API authentication (currently relies on WireGuard-only network access)
+
+#### Technical Debt
+- [ ] Config watcher proper lifetime management (replace 60s sleep loop in `config.rs`)
+- [ ] Python path traversal sanitization in `web_server.py` (net-manager)
+- [ ] Hardcoded DNS upstream `10.13.13.1:53` in `udp.rs` (move to config)
