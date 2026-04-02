@@ -125,7 +125,7 @@ data/
 ### Future Work
 
 #### Tests
-- [ ] Integration tests for persistence module (requires temp directory setup)
+- [x] Integration tests for persistence module (requires temp directory setup)
 - [ ] Integration tests for transparent proxy (requires TCP listener + SO_ORIGINAL_DST)
 - [ ] Integration tests for upstream handshake (requires mock HTTP/SOCKS5 proxy)
 - [ ] Benchmarks: `cargo bench` for `collect_top_n()`, EWMA scoring, and hot paths
