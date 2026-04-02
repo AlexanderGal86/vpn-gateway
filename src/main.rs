@@ -90,8 +90,9 @@ async fn main() -> anyhow::Result<()> {
     // UDP relay (DNS and other UDP)
     let udp_state = state.clone();
     let udp_port = config.udp_port;
+    let dns_upstream = config.dns_upstream.clone();
     handles.push(tokio::spawn(async move {
-        if let Err(e) = proxy::udp::start(udp_state, udp_port).await {
+        if let Err(e) = proxy::udp::start(udp_state, udp_port, dns_upstream).await {
             tracing::error!("UDP relay error: {}", e);
         }
     }));

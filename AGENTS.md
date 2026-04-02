@@ -405,9 +405,9 @@ Lazy lookup: GeoIP resolved asynchronously when proxy passes health check. Bound
 - [ ] API authentication (currently relies on WireGuard-only network access)
 
 ### Technical Debt
-- [ ] Config watcher proper lifetime management (replace 60s sleep loop in `config.rs`)
-- [ ] Python path traversal sanitization in `web_server.py` (net-manager)
-- [ ] Hardcoded DNS upstream `10.13.13.1:53` in `udp.rs` (move to config)
+- [x] Config watcher proper lifetime management (replace 60s sleep loop in `config.rs`)
+- [x] Python path traversal sanitization in `web_server.py` (net-manager)
+- [x] Hardcoded DNS upstream `10.13.13.1:53` in `udp.rs` (move to config)
 
 ### Enhancements
 - [ ] Geo-index for O(1) country-based proxy selection (`HashMap<country, Vec<proxy_key>>` in `state.rs`)
