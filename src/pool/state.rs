@@ -19,6 +19,12 @@ pub struct GeoIndex {
     index: Arc<DashMap<String, Vec<String>>>,
 }
 
+impl Default for GeoIndex {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl GeoIndex {
     pub fn new() -> Self {
         Self {
