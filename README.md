@@ -662,4 +662,4 @@ make geoip-update-dbip  # DB-IP City Lite (~19MB)
 
 ## License
 
-MIT
+Apache 2.0
