@@ -23,7 +23,10 @@ pub async fn start(_state: SharedState, port: u16, dns_upstream: String) -> anyh
     let addr = format!("0.0.0.0:{}", port);
     let socket = Arc::new(UdpSocket::bind(&addr).await?);
 
-    info!("UDP relay listening on {} (DNS upstream: {}, max {} concurrent tasks)", addr, dns_upstream, MAX_UDP_TASKS);
+    info!(
+        "UDP relay listening on {} (DNS upstream: {}, max {} concurrent tasks)",
+        addr, dns_upstream, MAX_UDP_TASKS
+    );
     let dns_upstream: Arc<str> = Arc::from(dns_upstream);
 
     let sessions: SessionTable = Arc::new(RwLock::new(HashMap::new()));
@@ -56,13 +59,18 @@ pub async fn start(_state: SharedState, port: u16, dns_upstream: String) -> anyh
         let permit = match semaphore.clone().try_acquire_owned() {
             Ok(permit) => permit,
             Err(_) => {
-                debug!("UDP task limit reached, dropping packet from {}", client_addr);
+                debug!(
+                    "UDP task limit reached, dropping packet from {}",
+                    client_addr
+                );
                 continue;
             }
         };
 
         tokio::spawn(async move {
-            if let Err(e) = handle_udp_packet(socket, client_addr, &data, &sessions, &dns_upstream).await {
+            if let Err(e) =
+                handle_udp_packet(socket, client_addr, &data, &sessions, &dns_upstream).await
+            {
                 debug!("UDP packet error from {}: {}", client_addr, e);
             }
             drop(permit);
@@ -149,9 +157,8 @@ async fn cleanup_sessions(sessions: &SessionTable) {
     let mut sessions_write = sessions.write().await;
     let now = Instant::now();
 
-    sessions_write.retain(|_, session| {
-        now.duration_since(session.last_activity) < Duration::from_secs(300)
-    });
+    sessions_write
+        .retain(|_, session| now.duration_since(session.last_activity) < Duration::from_secs(300));
 }
 
 #[cfg(test)]
@@ -207,8 +214,7 @@ mod tests {
     fn test_detect_upstream_custom_dns() {
         let custom = "8.8.8.8:53";
         let dns_query: Vec<u8> = vec![
-            0x12, 0x34, 0x01, 0x00, 0x00, 0x01,
-            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x12, 0x34, 0x01, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
         ];
         assert_eq!(detect_upstream(&dns_query, custom), custom);
     }

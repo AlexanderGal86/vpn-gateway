@@ -135,7 +135,7 @@ async fn add_proxy(
     };
 
     let key = format!("{}:{}", payload.host, payload.port);
-    
+
     if state.proxies.contains_key(&key) {
         return Json(ApiResponse {
             success: false,
@@ -173,11 +173,11 @@ async fn ban_proxy(
     }
 
     let key = format!("{}:{}", parts[0], parts[1]);
-    
+
     if let Some((_, proxy)) = state.proxies.remove(&key) {
         state.banned.insert(key.clone(), proxy);
         tracing::info!("Proxy banned: {}", key);
-        
+
         Json(ApiResponse {
             success: true,
             message: format!("Proxy {} banned", key),
@@ -197,9 +197,9 @@ async fn unban_proxy(
     if let Some((_, proxy)) = state.banned.remove(&proxy_key) {
         let key = proxy.key();
         state.proxies.insert(key, proxy);
-        
+
         tracing::info!("Proxy unbanned: {}", proxy_key);
-        
+
         Json(ApiResponse {
             success: true,
             message: format!("Proxy {} unbanned", proxy_key),
@@ -216,12 +216,10 @@ async fn network_status() -> Json<NetworkStatus> {
     let status_path = std::path::Path::new("data/clients/network-status.json");
     if status_path.exists() {
         match tokio::fs::read_to_string(status_path).await {
-            Ok(content) => {
-                match serde_json::from_str::<NetworkStatus>(&content) {
-                    Ok(status) => return Json(status),
-                    Err(e) => tracing::warn!("Failed to parse network-status.json: {}", e),
-                }
-            }
+            Ok(content) => match serde_json::from_str::<NetworkStatus>(&content) {
+                Ok(status) => return Json(status),
+                Err(e) => tracing::warn!("Failed to parse network-status.json: {}", e),
+            },
             Err(e) => tracing::warn!("Failed to read network-status.json: {}", e),
         }
     }
@@ -290,7 +288,11 @@ async fn read_peer_address(peer_dir: &std::path::Path) -> String {
 
 async fn read_peer_file(peer_dir: &std::path::Path, filename: &str) -> String {
     let path = peer_dir.join(filename);
-    tokio::fs::read_to_string(&path).await.unwrap_or_default().trim().to_string()
+    tokio::fs::read_to_string(&path)
+        .await
+        .unwrap_or_default()
+        .trim()
+        .to_string()
 }
 
 pub fn create_router(state: SharedState) -> Router {
@@ -320,11 +322,11 @@ pub async fn run(state: SharedState, port: u16) -> anyhow::Result<()> {
 mod tests {
     use super::*;
     use crate::pool::state::SharedState;
+    use axum::body::Body;
     use axum::http::StatusCode;
     use axum::Router;
-    use tower::ServiceExt;
-    use axum::body::Body;
     use http::Request;
+    use tower::ServiceExt;
 
     fn test_app() -> Router {
         let state = SharedState::new();
@@ -454,7 +456,9 @@ mod tests {
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
         // Parse body to check success=false
-        let body = axum::body::to_bytes(response.into_body(), 1024).await.unwrap();
+        let body = axum::body::to_bytes(response.into_body(), 1024)
+            .await
+            .unwrap();
         let resp: ApiResponse = serde_json::from_slice(&body).unwrap();
         assert!(!resp.success);
     }
@@ -473,7 +477,9 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
-        let body = axum::body::to_bytes(response.into_body(), 1024).await.unwrap();
+        let body = axum::body::to_bytes(response.into_body(), 1024)
+            .await
+            .unwrap();
         let resp: ApiResponse = serde_json::from_slice(&body).unwrap();
         assert!(!resp.success);
     }
@@ -492,7 +498,9 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
-        let body = axum::body::to_bytes(response.into_body(), 1024).await.unwrap();
+        let body = axum::body::to_bytes(response.into_body(), 1024)
+            .await
+            .unwrap();
         let resp: ApiResponse = serde_json::from_slice(&body).unwrap();
         assert!(!resp.success);
     }
@@ -514,7 +522,9 @@ mod tests {
             )
             .await
             .unwrap();
-        let body = axum::body::to_bytes(response.into_body(), 1024).await.unwrap();
+        let body = axum::body::to_bytes(response.into_body(), 1024)
+            .await
+            .unwrap();
         let resp: ApiResponse = serde_json::from_slice(&body).unwrap();
         assert!(resp.success);
         assert_eq!(state.proxies.len(), 0);
@@ -532,7 +542,9 @@ mod tests {
             )
             .await
             .unwrap();
-        let body = axum::body::to_bytes(response.into_body(), 1024).await.unwrap();
+        let body = axum::body::to_bytes(response.into_body(), 1024)
+            .await
+            .unwrap();
         let resp: ApiResponse = serde_json::from_slice(&body).unwrap();
         assert!(resp.success);
         assert_eq!(state.proxies.len(), 1);
@@ -557,9 +569,14 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
-        let body = axum::body::to_bytes(response.into_body(), 4096).await.unwrap();
+        let body = axum::body::to_bytes(response.into_body(), 4096)
+            .await
+            .unwrap();
         let text = String::from_utf8(body.to_vec()).unwrap();
-        assert!(text.contains("vpn_proxies_total"), "Prometheus metrics should contain vpn_proxies_total");
+        assert!(
+            text.contains("vpn_proxies_total"),
+            "Prometheus metrics should contain vpn_proxies_total"
+        );
     }
 
     #[tokio::test]
@@ -579,7 +596,9 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
-        let body = axum::body::to_bytes(response.into_body(), 1024).await.unwrap();
+        let body = axum::body::to_bytes(response.into_body(), 1024)
+            .await
+            .unwrap();
         let text = String::from_utf8(body.to_vec()).unwrap();
         assert!(text.contains("\"status\":\"ok\""));
         assert!(text.contains("\"verified_proxies\":1"));

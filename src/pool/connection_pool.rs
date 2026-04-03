@@ -2,8 +2,8 @@
 use dashmap::DashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tokio::sync::Mutex;
 use tokio::net::TcpStream;
+use tokio::sync::Mutex;
 
 const MAX_IDLE_SECS: u64 = 30;
 const MAX_PER_PROXY: usize = 5;
@@ -72,14 +72,15 @@ impl ConnectionPool {
 
     /// Return a connection to the pool.
     pub async fn put(&self, proxy_key: &str, stream: TcpStream) {
-        let pool = self.pools
+        let pool = self
+            .pools
             .entry(proxy_key.to_string())
             .or_insert_with(|| Arc::new(Mutex::new(Vec::new())))
             .value()
             .clone();
 
         let mut guard = pool.lock().await;
-        
+
         if guard.len() >= self.max_per_proxy {
             return; // Pool full
         }
@@ -89,22 +90,22 @@ impl ConnectionPool {
             created_at: Instant::now(),
             last_used: Instant::now(),
         });
-        
+
         tracing::debug!("Connection pool put: {}", proxy_key);
     }
 
     /// Check if a TCP connection is still alive.
     async fn is_connection_alive(stream: &TcpStream) -> bool {
-        matches!(tokio::time::timeout(
-            Duration::from_millis(100),
-            stream.peek(&mut [0u8; 1])
-        ).await, Ok(Ok(_)))
+        matches!(
+            tokio::time::timeout(Duration::from_millis(100), stream.peek(&mut [0u8; 1])).await,
+            Ok(Ok(_))
+        )
     }
 
     /// Clean up stale connections.
     pub async fn cleanup(&self) {
         let now = Instant::now();
-        
+
         for pool in self.pools.iter() {
             let mut guard = pool.value().lock().await;
             guard.retain(|conn| now.duration_since(conn.created_at) < self.max_idle);
@@ -115,7 +116,7 @@ impl ConnectionPool {
     pub fn stats(&self) -> ConnectionPoolStats {
         let mut total = 0;
         let mut proxies = 0;
-        
+
         for pool in self.pools.iter() {
             proxies += 1;
             if let Ok(guard) = pool.value().try_lock() {

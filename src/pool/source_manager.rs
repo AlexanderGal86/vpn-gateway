@@ -42,11 +42,7 @@ fn parse_line(line: &str, protocol: Protocol) -> Option<Proxy> {
 }
 
 /// Fetch a single source URL with retry and rate limiting.
-async fn fetch_source(
-    client: &reqwest::Client,
-    url: &str,
-    protocol: Protocol,
-) -> Vec<Proxy> {
+async fn fetch_source(client: &reqwest::Client, url: &str, protocol: Protocol) -> Vec<Proxy> {
     // Retry up to 2 times with backoff
     for attempt in 0..3 {
         if attempt > 0 {
@@ -71,7 +67,13 @@ async fn fetch_source(
             Err(e) => {
                 if attempt < 2 {
                     let backoff = Duration::from_secs(2u64.pow(attempt as u32));
-                    tracing::warn!("Failed to fetch {} (attempt {}), retrying in {:?}: {}", url, attempt + 1, backoff, e);
+                    tracing::warn!(
+                        "Failed to fetch {} (attempt {}), retrying in {:?}: {}",
+                        url,
+                        attempt + 1,
+                        backoff,
+                        e
+                    );
                     tokio::time::sleep(backoff).await;
                     continue;
                 }
@@ -203,7 +205,10 @@ pub async fn load_sources_from_file(path: &str) -> Vec<String> {
         Ok(c) => c,
         Err(e) => {
             tracing::warn!("Failed to read sources config: {}", e);
-            return default_sources().into_iter().map(|(s, _)| s.to_string()).collect();
+            return default_sources()
+                .into_iter()
+                .map(|(s, _)| s.to_string())
+                .collect();
         }
     };
 
@@ -216,7 +221,10 @@ pub async fn load_sources_from_file(path: &str) -> Vec<String> {
         Ok(config) => config.sources,
         Err(e) => {
             tracing::warn!("Failed to parse sources config: {}", e);
-            default_sources().into_iter().map(|(s, _)| s.to_string()).collect()
+            default_sources()
+                .into_iter()
+                .map(|(s, _)| s.to_string())
+                .collect()
         }
     }
 }

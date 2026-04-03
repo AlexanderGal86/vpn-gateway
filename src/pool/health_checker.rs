@@ -56,7 +56,12 @@ async fn check_http_connect(proxy: &Proxy, timeout_ms: u64) -> (String, Result<f
     let mut reader = BufReader::new(read_half);
     let mut line = String::new();
 
-    let response = match tokio::time::timeout(Duration::from_millis(timeout_ms), reader.read_line(&mut line)).await {
+    let response = match tokio::time::timeout(
+        Duration::from_millis(timeout_ms),
+        reader.read_line(&mut line),
+    )
+    .await
+    {
         Ok(Ok(_)) => line,
         _ => return (key, Err(())),
     };
@@ -76,9 +81,7 @@ async fn check_single(proxy: &Proxy, timeout_ms: u64) -> (String, Result<f64, ()
     let key = proxy.key();
 
     match check_tcp_connect(proxy, timeout_ms).await {
-        (_, Ok(_tcp_latency)) => {
-            check_http_connect(proxy, timeout_ms).await
-        }
+        (_, Ok(_tcp_latency)) => check_http_connect(proxy, timeout_ms).await,
         (_, Err(())) => (key, Err(())),
     }
 }
@@ -86,17 +89,17 @@ async fn check_single(proxy: &Proxy, timeout_ms: u64) -> (String, Result<f64, ()
 /// Fast probe: check a batch of proxies in parallel with two-stage verification.
 /// Each working proxy is IMMEDIATELY added to the pool (early return pattern).
 /// Returns the number of working proxies found.
-pub async fn fast_probe(
-    state: &SharedState,
-    proxies: Vec<Proxy>,
-    timeout_ms: u64,
-) -> usize {
+pub async fn fast_probe(state: &SharedState, proxies: Vec<Proxy>, timeout_ms: u64) -> usize {
     if proxies.is_empty() {
         return 0;
     }
 
     let batch_size = proxies.len();
-    tracing::info!("Fast probe: checking {} proxies (timeout={}ms, 2-stage)", batch_size, timeout_ms);
+    tracing::info!(
+        "Fast probe: checking {} proxies (timeout={}ms, 2-stage)",
+        batch_size,
+        timeout_ms
+    );
 
     let mut tasks = FuturesUnordered::new();
     for proxy in &proxies {

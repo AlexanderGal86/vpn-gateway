@@ -209,7 +209,9 @@ mod tests {
     #[tokio::test]
     async fn test_load_state_invalid_json() {
         let path = temp_path("bad.json");
-        tokio::fs::write(&path, b"not valid json at all!!!").await.unwrap();
+        tokio::fs::write(&path, b"not valid json at all!!!")
+            .await
+            .unwrap();
 
         let state = SharedState::new();
         let count = load_state_from(&state, &path).await;
@@ -309,7 +311,10 @@ mod tests {
         state.insert_if_absent(p);
 
         save_state_to(&state, &path).await;
-        assert!(path.exists(), "File should be created even if parent dirs were missing");
+        assert!(
+            path.exists(),
+            "File should be created even if parent dirs were missing"
+        );
 
         // Clean up
         let _ = tokio::fs::remove_file(&path).await;
@@ -341,7 +346,11 @@ mod tests {
 
         // 5 were in the file; all 5 are "loaded" (counter) but only 3 inserted
         assert_eq!(count, 5, "load count reflects file contents");
-        assert_eq!(state.total_count(), 3, "pool should be capped at max_proxies");
+        assert_eq!(
+            state.total_count(),
+            3,
+            "pool should be capped at max_proxies"
+        );
 
         let _ = tokio::fs::remove_file(&path).await;
     }

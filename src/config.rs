@@ -9,49 +9,49 @@ use tokio::sync::RwLock;
 pub struct Config {
     #[serde(default = "default_gateway_port")]
     pub gateway_port: u16,
-    
+
     #[serde(default = "default_api_port")]
     pub api_port: u16,
-    
+
     #[serde(default = "default_udp_port")]
     pub udp_port: u16,
-    
+
     #[serde(default = "default_max_proxies")]
     pub max_proxies: usize,
-    
+
     #[serde(default = "default_max_connections")]
     pub max_connections: usize,
-    
+
     #[serde(default = "default_health_check_interval")]
     pub health_check_interval: u64,
-    
+
     #[serde(default = "default_source_update_interval")]
     pub source_update_interval: u64,
-    
+
     #[serde(default)]
     pub preferred_countries: Vec<String>,
-    
+
     #[serde(default)]
     pub geoip_path: Option<String>,
-    
+
     #[serde(default = "default_state_path")]
     pub state_path: String,
-    
+
     #[serde(default = "default_sources_path")]
     pub sources_path: String,
-    
+
     #[serde(default = "default_connection_pool_max_idle")]
     pub connection_pool_max_idle: u64,
-    
+
     #[serde(default = "default_connection_pool_max_per_proxy")]
     pub connection_pool_max_per_proxy: usize,
-    
+
     #[serde(default)]
     pub enable_connection_pool: bool,
-    
+
     #[serde(default = "default_sticky_session_ttl")]
     pub sticky_session_ttl: u64,
-    
+
     #[serde(default)]
     pub enable_sticky_sessions: bool,
 
@@ -59,19 +59,45 @@ pub struct Config {
     pub dns_upstream: String,
 }
 
-fn default_gateway_port() -> u16 { 1080 }
-fn default_api_port() -> u16 { 8080 }
-fn default_udp_port() -> u16 { 1081 }
-fn default_dns_upstream() -> String { "10.13.13.1:53".to_string() }
-fn default_max_proxies() -> usize { 5000 }
-fn default_max_connections() -> usize { 10000 }
-fn default_health_check_interval() -> u64 { 30 }
-fn default_source_update_interval() -> u64 { 300 }
-fn default_state_path() -> String { "data/state.json".to_string() }
-fn default_sources_path() -> String { "config/sources.json".to_string() }
-fn default_connection_pool_max_idle() -> u64 { 60 }
-fn default_connection_pool_max_per_proxy() -> usize { 10 }
-fn default_sticky_session_ttl() -> u64 { 300 }
+fn default_gateway_port() -> u16 {
+    1080
+}
+fn default_api_port() -> u16 {
+    8080
+}
+fn default_udp_port() -> u16 {
+    1081
+}
+fn default_dns_upstream() -> String {
+    "10.13.13.1:53".to_string()
+}
+fn default_max_proxies() -> usize {
+    5000
+}
+fn default_max_connections() -> usize {
+    10000
+}
+fn default_health_check_interval() -> u64 {
+    30
+}
+fn default_source_update_interval() -> u64 {
+    300
+}
+fn default_state_path() -> String {
+    "data/state.json".to_string()
+}
+fn default_sources_path() -> String {
+    "config/sources.json".to_string()
+}
+fn default_connection_pool_max_idle() -> u64 {
+    60
+}
+fn default_connection_pool_max_per_proxy() -> usize {
+    10
+}
+fn default_sticky_session_ttl() -> u64 {
+    300
+}
 
 impl Default for Config {
     fn default() -> Self {
@@ -108,7 +134,11 @@ impl Config {
         match Self::load_from_file(path) {
             Ok(config) => config,
             Err(e) => {
-                tracing::warn!("Failed to load config from '{}': {}. Using defaults.", path, e);
+                tracing::warn!(
+                    "Failed to load config from '{}': {}. Using defaults.",
+                    path,
+                    e
+                );
                 Self::default()
             }
         }
@@ -162,16 +192,17 @@ impl ConfigManager {
         let shutdown = self.shutdown.clone();
 
         tokio::spawn(async move {
-            let watcher = notify::recommended_watcher(move |res: Result<notify::Event, notify::Error>| {
-                match res {
-                    Ok(event) => {
-                        if event.kind.is_modify() || event.kind.is_create() {
-                            let _ = tx.blocking_send(());
+            let watcher =
+                notify::recommended_watcher(move |res: Result<notify::Event, notify::Error>| {
+                    match res {
+                        Ok(event) => {
+                            if event.kind.is_modify() || event.kind.is_create() {
+                                let _ = tx.blocking_send(());
+                            }
                         }
+                        Err(e) => tracing::error!("Config watch error: {}", e),
                     }
-                    Err(e) => tracing::error!("Config watch error: {}", e),
-                }
-            });
+                });
 
             if let Ok(mut watcher) = watcher {
                 if let Err(e) = watcher.watch(&watch_path, notify::RecursiveMode::NonRecursive) {

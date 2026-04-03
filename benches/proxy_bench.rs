@@ -6,7 +6,12 @@ use vpn_gateway::pool::state::SharedState;
 fn setup_pool(n: usize) -> SharedState {
     let state = SharedState::new();
     for i in 0..n {
-        let host = format!("10.{}.{}.{}", (i >> 16) & 0xFF, (i >> 8) & 0xFF, (i & 0xFF) + 1);
+        let host = format!(
+            "10.{}.{}.{}",
+            (i >> 16) & 0xFF,
+            (i >> 8) & 0xFF,
+            (i & 0xFF) + 1
+        );
         let proxy = Proxy::new(host.clone(), 8080, Protocol::Http);
         state.insert_if_absent(proxy);
         state.record_success(&format!("{}:8080", host), (i as f64 + 1.0) * 10.0);
@@ -18,15 +23,11 @@ fn bench_collect_top_n(c: &mut Criterion) {
     let mut group = c.benchmark_group("collect_top_n");
     for size in [100, 500, 1000, 5000] {
         let state = setup_pool(size);
-        group.bench_with_input(
-            BenchmarkId::from_parameter(size),
-            &state,
-            |b, state| {
-                b.iter(|| {
-                    black_box(state.select_best());
-                });
-            },
-        );
+        group.bench_with_input(BenchmarkId::from_parameter(size), &state, |b, state| {
+            b.iter(|| {
+                black_box(state.select_best());
+            });
+        });
     }
     group.finish();
 }
@@ -79,7 +80,16 @@ fn bench_insert_if_absent(c: &mut Criterion) {
         let state = SharedState::new();
         let mut i = 0u64;
         b.iter(|| {
-            let proxy = Proxy::new(format!("10.{}.{}.{}", (i >> 16) & 0xFF, (i >> 8) & 0xFF, (i & 0xFF) + 1), 8080, Protocol::Http);
+            let proxy = Proxy::new(
+                format!(
+                    "10.{}.{}.{}",
+                    (i >> 16) & 0xFF,
+                    (i >> 8) & 0xFF,
+                    (i & 0xFF) + 1
+                ),
+                8080,
+                Protocol::Http,
+            );
             black_box(state.insert_if_absent(proxy));
             i += 1;
         });

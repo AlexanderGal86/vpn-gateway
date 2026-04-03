@@ -63,18 +63,14 @@ async fn handle_connection(mut client: TcpStream, peer: SocketAddr, state: Share
 
     // Step 2: Peek first bytes for SNI/Host
     let mut peek_buf = vec![0u8; 4096];
-    let peeked = match tokio::time::timeout(
-        Duration::from_secs(5),
-        client.peek(&mut peek_buf),
-    )
-    .await
-    {
-        Ok(Ok(n)) => n,
-        _ => {
-            tracing::debug!("Peek timeout/error for {} -> {}", peer, original_dst);
-            return;
-        }
-    };
+    let peeked =
+        match tokio::time::timeout(Duration::from_secs(5), client.peek(&mut peek_buf)).await {
+            Ok(Ok(n)) => n,
+            _ => {
+                tracing::debug!("Peek timeout/error for {} -> {}", peer, original_dst);
+                return;
+            }
+        };
 
     let target_host = match sniff::sniff(&peek_buf[..peeked]) {
         sniff::SniffedTarget::TlsSni(domain) => {
@@ -105,7 +101,7 @@ async fn handle_connection(mut client: TcpStream, peer: SocketAddr, state: Share
 
     // Check for sticky session first
     let mut selected_proxy_key: Option<String> = None;
-    
+
     // Try sticky session on first attempt
     if let Some(sticky_key) = state.sticky_sessions.get(&peer) {
         if state.proxies.contains_key(&sticky_key) {
@@ -132,11 +128,8 @@ async fn handle_connection(mut client: TcpStream, peer: SocketAddr, state: Share
             None => {
                 // No proxies available — wait for first_ready
                 tracing::warn!("No proxies available, waiting...");
-                match tokio::time::timeout(
-                    Duration::from_secs(10),
-                    state.first_ready.notified(),
-                )
-                .await
+                match tokio::time::timeout(Duration::from_secs(10), state.first_ready.notified())
+                    .await
                 {
                     Ok(_) => match state.select_best() {
                         Some(p) => p,
@@ -183,12 +176,7 @@ async fn handle_connection(mut client: TcpStream, peer: SocketAddr, state: Share
                 .await
                 {
                     Ok(Ok((down, up))) => {
-                        tracing::debug!(
-                            "{}: transfer done ({} down, {} up)",
-                            peer,
-                            down,
-                            up
-                        );
+                        tracing::debug!("{}: transfer done ({} down, {} up)", peer, down, up);
                     }
                     Ok(Err(e)) => {
                         tracing::debug!("{}: relay error: {}", peer, e);
@@ -230,11 +218,19 @@ async fn handle_connection(mut client: TcpStream, peer: SocketAddr, state: Share
 }
 
 /// Start the transparent proxy listener with a configurable connection limit.
-pub async fn run_with_max_connections(state: SharedState, port: u16, max_connections: usize) -> Result<()> {
+pub async fn run_with_max_connections(
+    state: SharedState,
+    port: u16,
+    max_connections: usize,
+) -> Result<()> {
     let addr = format!("0.0.0.0:{}", port);
     let listener = TcpListener::bind(&addr).await?;
     let semaphore = Arc::new(Semaphore::new(max_connections));
-    tracing::info!("Transparent proxy listening on {} (max {} connections)", addr, max_connections);
+    tracing::info!(
+        "Transparent proxy listening on {} (max {} connections)",
+        addr,
+        max_connections
+    );
 
     loop {
         let (stream, peer) = listener.accept().await?;
@@ -242,7 +238,11 @@ pub async fn run_with_max_connections(state: SharedState, port: u16, max_connect
         let permit = match semaphore.clone().try_acquire_owned() {
             Ok(permit) => permit,
             Err(_) => {
-                tracing::warn!("Connection limit reached ({}), rejecting {}", max_connections, peer);
+                tracing::warn!(
+                    "Connection limit reached ({}), rejecting {}",
+                    max_connections,
+                    peer
+                );
                 drop(stream);
                 continue;
             }
@@ -267,13 +267,14 @@ mod tests {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
 
-        let client_handle = tokio::spawn(async move {
-            TcpStream::connect(addr).await.unwrap()
-        });
+        let client_handle = tokio::spawn(async move { TcpStream::connect(addr).await.unwrap() });
 
         let (server_stream, _peer) = listener.accept().await.unwrap();
         let result = get_original_dst(&server_stream);
-        assert!(result.is_none(), "Should return None without iptables REDIRECT");
+        assert!(
+            result.is_none(),
+            "Should return None without iptables REDIRECT"
+        );
 
         let _ = client_handle.await;
     }
@@ -285,9 +286,7 @@ mod tests {
         let addr = listener.local_addr().unwrap();
 
         // Spawn a client that connects
-        let client = tokio::spawn(async move {
-            TcpStream::connect(addr).await.unwrap()
-        });
+        let client = tokio::spawn(async move { TcpStream::connect(addr).await.unwrap() });
 
         let (stream, peer) = listener.accept().await.unwrap();
         assert!(peer.ip().is_loopback());
@@ -335,9 +334,13 @@ mod tests {
         let result = tokio::time::timeout(
             Duration::from_secs(2),
             handle_connection(stream, peer, state.clone()),
-        ).await;
+        )
+        .await;
 
-        assert!(result.is_ok(), "handle_connection should return quickly without SO_ORIGINAL_DST");
+        assert!(
+            result.is_ok(),
+            "handle_connection should return quickly without SO_ORIGINAL_DST"
+        );
 
         // active_connections should be 0 (never incremented since it exits early)
         assert_eq!(state.active_connections.load(Ordering::Relaxed), 0);

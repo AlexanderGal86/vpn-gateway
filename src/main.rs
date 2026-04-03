@@ -29,14 +29,23 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!("VPN Gateway starting...");
 
     // Load configuration
-    let config_path = std::env::var("CONFIG_PATH").unwrap_or_else(|_| "config/gateway.json".to_string());
+    let config_path =
+        std::env::var("CONFIG_PATH").unwrap_or_else(|_| "config/gateway.json".to_string());
     let config_manager = ConfigManager::new(config_path.clone());
     let config = config_manager.get().await;
-    
-    tracing::info!("Loaded config: proxy_port={}, api_port={}", config.gateway_port, config.api_port);
+
+    tracing::info!(
+        "Loaded config: proxy_port={}, api_port={}",
+        config.gateway_port,
+        config.api_port
+    );
 
     // Create shared state with config
-    let state = SharedState::with_config(config.geoip_path.clone(), config.sticky_session_ttl, config.max_proxies);
+    let state = SharedState::with_config(
+        config.geoip_path.clone(),
+        config.sticky_session_ttl,
+        config.max_proxies,
+    );
 
     // Load GeoIP if configured
     if let Some(ref _path) = config.geoip_path {
@@ -65,9 +74,7 @@ async fn main() -> anyhow::Result<()> {
     let to_probe = state.proxies_needing_check(60);
     let fast_probe_handle = {
         let state = state.clone();
-        tokio::spawn(async move {
-            pool::health_checker::fast_probe(&state, to_probe, 3000).await
-        })
+        tokio::spawn(async move { pool::health_checker::fast_probe(&state, to_probe, 3000).await })
     };
 
     // =============================================
@@ -82,7 +89,13 @@ async fn main() -> anyhow::Result<()> {
     let proxy_state = state.clone();
     let max_connections = config.max_connections;
     handles.push(tokio::spawn(async move {
-        if let Err(e) = proxy::transparent::run_with_max_connections(proxy_state, config.gateway_port, max_connections).await {
+        if let Err(e) = proxy::transparent::run_with_max_connections(
+            proxy_state,
+            config.gateway_port,
+            max_connections,
+        )
+        .await
+        {
             tracing::error!("Transparent proxy error: {}", e);
         }
     }));
@@ -120,7 +133,12 @@ async fn main() -> anyhow::Result<()> {
         pool::source_manager::full_refresh_with_sources(&full_state, &sources_path).await;
 
         // Then periodic refresh
-        pool::source_manager::run_source_loop_with_path(full_state, config.source_update_interval, &sources_path).await;
+        pool::source_manager::run_source_loop_with_path(
+            full_state,
+            config.source_update_interval,
+            &sources_path,
+        )
+        .await;
     }));
 
     // =============================================
@@ -176,7 +194,9 @@ async fn main() -> anyhow::Result<()> {
             }
             // Update sticky session TTL if changed
             let new_config = reload_manager.get().await;
-            reload_state.sticky_sessions.set_ttl(new_config.sticky_session_ttl);
+            reload_state
+                .sticky_sessions
+                .set_ttl(new_config.sticky_session_ttl);
         }
     }));
 
@@ -190,7 +210,9 @@ async fn main() -> anyhow::Result<()> {
     );
 
     // Wait for Ctrl+C
-    tokio::signal::ctrl_c().await.expect("Failed to listen for Ctrl+C");
+    tokio::signal::ctrl_c()
+        .await
+        .expect("Failed to listen for Ctrl+C");
     tracing::info!("Received Ctrl+C, shutting down...");
 
     // Abort all background tasks
