@@ -3,17 +3,9 @@ name: CI
 on:
   push:
     branches: [main]
-    paths:
-      - 'src/**'
-      - 'Cargo.toml'
-      - 'Cargo.lock'
-      - 'Makefile'
   pull_request:
-    paths:
-      - 'src/**'
-      - 'Cargo.toml'
-      - 'Cargo.lock'
-      - 'Makefile'
+  repository_dispatch:
+    types: [run_ci]
   workflow_dispatch:
 
 env:
