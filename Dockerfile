@@ -15,6 +15,7 @@ RUN cargo build --release 2>/dev/null || true
 RUN rm -rf src
 
 COPY src ./src
+COPY benches ./benches
 RUN cargo build --release
 
 # === RUNTIME STAGE ===
