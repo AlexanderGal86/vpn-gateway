@@ -16,13 +16,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          sparse-checkout: |
-            src
-            Cargo.toml
-            Cargo.lock
-            Makefile
-          sparse-checkout-cone-mode: recursive
 
       - name: Install Rust
         run: rustup default stable
@@ -43,13 +36,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          sparse-checkout: |
-            src
-            Cargo.toml
-            Cargo.lock
-            Makefile
-          sparse-checkout-cone-mode: recursive
 
       - name: Install Rust
         run: rustup default stable
@@ -67,12 +53,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          sparse-checkout: |
-            src
-            Cargo.toml
-            Makefile
-          sparse-checkout-cone-mode: recursive
 
       - name: Install Rust
         run: rustup default stable
