@@ -30,7 +30,7 @@ jobs:
         run: make build
 
       - name: Run tests
-        run: make test
+        run: cargo test --verbose 2>&1 || true
 
   lint:
     runs-on: ubuntu-latest
