@@ -46,7 +46,7 @@ parking_lot = "0.12"
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }
 http = "1"
-criterion = { version = "0.5", features = ["html_reports"] }
+criterion = { version = "0.8", features = ["html_reports"] }
 
 [[bench]]
 name = "proxy_bench"
