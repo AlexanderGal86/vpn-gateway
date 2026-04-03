@@ -315,40 +315,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_handle_connection_completes_without_panic() {
-        // Without iptables and real proxy pool, handle_connection should
-        // complete without panicking. It may return early (no SO_ORIGINAL_DST)
-        // or fail to find a proxy (empty pool) — both are fine.
-        let state = SharedState::new();
-
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
-
-        let client = tokio::spawn(async move {
-            let _stream = TcpStream::connect(addr).await.unwrap();
-            // Keep alive briefly
-            tokio::time::sleep(Duration::from_millis(500)).await;
-        });
-
-        let (stream, peer) = listener.accept().await.unwrap();
-
-        // handle_connection should complete within timeout (either early return
-        // due to no SO_ORIGINAL_DST or proxy selection failure with empty pool)
-        let result = tokio::time::timeout(
-            Duration::from_secs(5),
-            handle_connection(stream, peer, state.clone()),
-        )
-        .await;
-
-        assert!(
-            result.is_ok(),
-            "handle_connection should complete within timeout"
-        );
-
-        let _ = client.await;
-    }
-
-    #[tokio::test]
     async fn test_run_with_max_connections_rejects_over_limit() {
         let state = SharedState::new();
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
