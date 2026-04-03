@@ -1,0 +1,4 @@
+max_width = 100
+format_strings = true
+imports_granularity = "Item"
+group_imports = "StdExternalCrate"
