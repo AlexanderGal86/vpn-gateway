@@ -4,58 +4,47 @@ on:
   push:
     branches: [main]
   pull_request:
-  repository_dispatch:
-    types: [run_ci]
   workflow_dispatch:
 
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  test-docker:
+  fmt:
+    name: Format check
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Build Docker image
-        uses: docker/build-push-action@v5
+      - uses: dtolnay/rust-toolchain@stable
         with:
-          context: .
-          tags: vpn-gateway:latest
-          load: true
-
-      - name: Run tests in Docker with NET_ADMIN
-        run: docker run --cap-add=NET_ADMIN vpn-gateway make test
+          components: rustfmt
+      - run: cargo fmt -- --check
 
   lint:
+    name: Clippy
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
-      - name: Install Rust
-        run: |
-          rustup show
-
-      - name: Cache cargo
-        uses: Swatinem/rust-cache@v2
+      - uses: dtolnay/rust-toolchain@stable
         with:
-          shared-key: "vpn-gateway"
-          cache-targets: false
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo clippy -- -D warnings
 
-      - name: Lint
-        run: make lint
-
-  fmt:
+  test:
+    name: Tests
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test
 
-      - name: Install Rust
-        run: |
-          rustup show
-
-      - name: Format check
-        run: make fmt
+  bench:
+    name: Bench compile check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo bench --no-run
