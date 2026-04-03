@@ -128,7 +128,11 @@ impl SharedState {
         }
     }
 
-    pub fn with_config(geoip_path: Option<String>, sticky_ttl_secs: u64, max_proxies: usize) -> Self {
+    pub fn with_config(
+        geoip_path: Option<String>,
+        sticky_ttl_secs: u64,
+        max_proxies: usize,
+    ) -> Self {
         let geoip = match geoip_path {
             // Note: load() should be called separately as it's async
             Some(path) => GeoIp::with_db_path(path),
@@ -208,7 +212,9 @@ impl SharedState {
                 if let Some(idx) = top
                     .iter()
                     .enumerate()
-                    .max_by(|(_, a), (_, b)| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal))
+                    .max_by(|(_, a), (_, b)| {
+                        a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal)
+                    })
                     .map(|(i, _)| i)
                 {
                     top[idx] = (score, p.clone());
@@ -228,8 +234,14 @@ impl SharedState {
         }
 
         // Invert scores for weights (lower score = higher weight)
-        let max_score = candidates.iter().map(|p| p.score()).fold(f64::MIN, f64::max);
-        let weights: Vec<f64> = candidates.iter().map(|p| (max_score - p.score()) + 1.0).collect();
+        let max_score = candidates
+            .iter()
+            .map(|p| p.score())
+            .fold(f64::MIN, f64::max);
+        let weights: Vec<f64> = candidates
+            .iter()
+            .map(|p| (max_score - p.score()) + 1.0)
+            .collect();
 
         match WeightedIndex::new(&weights) {
             Ok(dist) => {
@@ -495,7 +507,11 @@ mod tests {
                 selections.insert(p.host);
             }
         }
-        assert!(selections.len() > 1, "Should select from multiple proxies, got {}", selections.len());
+        assert!(
+            selections.len() > 1,
+            "Should select from multiple proxies, got {}",
+            selections.len()
+        );
     }
 
     #[test]

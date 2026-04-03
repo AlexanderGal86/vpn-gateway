@@ -27,6 +27,16 @@ Run a single test: `cargo test <test_name>`
 
 Config path override: `CONFIG_PATH=path/to/config.json cargo run`
 
+## CI/CD (GitHub Actions)
+
+GitHub Actions runs `make check` (clippy + fmt + test) automatically on every push to `main` and on PRs. **Before running tests locally, check if CI already ran them** — this saves time and tokens.
+
+- **CI workflow** (`.github/workflows/ci.yml`): fmt → clippy → test → bench compile check
+- **Release workflow** (`.github/workflows/release.yml`): triggered by `v*` tags, builds Linux binary + Docker image → `ghcr.io`
+- **Dependabot**: weekly PRs for Cargo, pip, and GitHub Actions dependency updates
+
+To create a release: `git tag v0.x.0 && git push --tags`
+
 ## Architecture
 
 Rust (tokio async) transparent TCP/UDP proxy gateway that routes traffic through a dynamic pool of free proxy servers. Runs on Linux with iptables redirecting WireGuard client traffic to the gateway.

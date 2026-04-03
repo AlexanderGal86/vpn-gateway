@@ -167,28 +167,19 @@ mod tests {
     #[test]
     fn test_parse_http_connect() {
         let req = b"CONNECT example.com:443 HTTP/1.1\r\nHost: example.com:443\r\n\r\n";
-        assert_eq!(
-            parse_http_host(req),
-            Some("example.com".to_string())
-        );
+        assert_eq!(parse_http_host(req), Some("example.com".to_string()));
     }
 
     #[test]
     fn test_parse_http_get() {
         let req = b"GET /path HTTP/1.1\r\nHost: www.example.com\r\nAccept: */*\r\n\r\n";
-        assert_eq!(
-            parse_http_host(req),
-            Some("www.example.com".to_string())
-        );
+        assert_eq!(parse_http_host(req), Some("www.example.com".to_string()));
     }
 
     #[test]
     fn test_parse_http_host_with_port() {
         let req = b"GET / HTTP/1.1\r\nHost: example.com:8080\r\n\r\n";
-        assert_eq!(
-            parse_http_host(req),
-            Some("example.com".to_string())
-        );
+        assert_eq!(parse_http_host(req), Some("example.com".to_string()));
     }
 
     #[test]
