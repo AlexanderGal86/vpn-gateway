@@ -1,0 +1,88 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'src/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'Makefile'
+  pull_request:
+    paths:
+      - 'src/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'Makefile'
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: |
+            src
+            Cargo.toml
+            Cargo.lock
+            Makefile
+          sparse-checkout-cone-mode: recursive
+
+      - name: Install Rust
+        run: rustup default stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "vpn-gateway"
+          cache-targets: false
+
+      - name: Build
+        run: make build
+
+      - name: Run tests
+        run: make test
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: |
+            src
+            Cargo.toml
+            Cargo.lock
+            Makefile
+          sparse-checkout-cone-mode: recursive
+
+      - name: Install Rust
+        run: rustup default stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "vpn-gateway"
+          cache-targets: false
+
+      - name: Lint
+        run: make lint
+
+  fmt:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: |
+            src
+            Cargo.toml
+            Makefile
+          sparse-checkout-cone-mode: recursive
+
+      - name: Install Rust
+        run: rustup default stable
+
+      - name: Format check
+        run: make fmt
