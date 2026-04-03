@@ -1,4 +1,5 @@
 max_width = 100
-format_strings = true
-imports_granularity = "Item"
-group_imports = "StdExternalCrate"
+format_strings = false
+imports_granularity = "Crate"
+group_imports = "Preserve"
+edition = "2021"
