@@ -51,7 +51,7 @@ case "$MODE" in
     set_kv_if_missing "WG_SERVER_URL" "auto"
     ;;
   home-desktop)
-    set_kv_if_missing "DOCKER_HOST_IP" "127.0.0.1"
+    set_kv_if_missing "DOCKER_HOST_IP" "host.docker.internal"
     set_kv_if_missing "WG_SERVER_URL" "auto"
     ;;
   *)

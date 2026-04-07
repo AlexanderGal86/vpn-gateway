@@ -54,7 +54,7 @@ make docker-local-up
 - macvlan недоступен/нежелателен.
 
 **Что меняется**
-- net-manager переводится в host mode override.
+- net-manager остаётся в обычной bridge-сети Compose (без macvlan).
 
 **Команда**
 ```bash
@@ -142,7 +142,7 @@ curl -s http://localhost:8088/status   # только NAT-режим
   - `rust-tests` → `make test`
   - `mode-automation` → `./scripts/test-mode-automation.sh`
 
-`test-mode-automation.sh` использует мок-команды (`docker/ip/ss`) для детерминированной проверки логики `env-init/preflight` в CI, без зависимости от конкретной сетевой конфигурации раннера.
+`test-mode-automation.sh` выполняет реальные проверки `env-init/preflight` для всех режимов. Если в окружении нет `docker` или `ip`, runtime-проверки пропускаются с предупреждением.
 
 ---
 

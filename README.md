@@ -582,7 +582,7 @@ Located in `services/net-manager/`, this service handles network configuration:
 6. Serves configs via HTTP on port 8088
 7. Monitors for IP changes every 30 seconds, regenerates configs on change
 
-> **Note**: macvlan doesn't work on Docker Desktop (Windows/Mac). Use `make docker-dev-up` which replaces macvlan with host networking.
+> **Note**: macvlan doesn't work on Docker Desktop (Windows/Mac). Use `make docker-dev-up` which keeps `net-manager` on bridge networking (no macvlan).
 
 ---
 
