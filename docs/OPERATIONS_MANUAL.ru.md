@@ -8,7 +8,7 @@
 
 ---
 
-## 1) Два режима без двусмысленности
+## 1) Три режима (актуально)
 
 ### Режим A: VPS (публичный IP)
 Файл: `docker-compose.yml`
@@ -30,7 +30,7 @@ make docker-up
 
 ---
 
-### Режим B: VM/Home за NAT
+### Режим B: Home Linux VM за NAT
 Файл: `docker-compose-local.yml`
 
 **Когда использовать**
@@ -44,6 +44,21 @@ make docker-up
 **Команда**
 ```bash
 make docker-local-up
+```
+
+### Режим C: Home Desktop (Windows/macOS Docker Desktop)
+Файлы: `docker-compose-local.yml` + `docker-compose-dev.yml`
+
+**Когда использовать**
+- локальная разработка на Docker Desktop;
+- macvlan недоступен/нежелателен.
+
+**Что меняется**
+- net-manager переводится в host mode override.
+
+**Команда**
+```bash
+make up MODE=home-desktop
 ```
 
 ---
@@ -86,7 +101,6 @@ make docker-local-up
 
 ## 4) Операционный runbook
 
-### Старт/стоп
 ### Автоматизированный запуск (рекомендуется)
 ```bash
 make env-init MODE=vps           # или home-vm / home-desktop
@@ -121,7 +135,18 @@ curl -s http://localhost:8088/status   # только NAT-режим
 
 ---
 
-## 5) Подводные камни (важно)
+## 5) CI и автотесты режимов
+
+- Workflow: `.github/workflows/ci-mode-tests.yml`
+- Джобы:
+  - `rust-tests` → `make test`
+  - `mode-automation` → `./scripts/test-mode-automation.sh`
+
+`test-mode-automation.sh` использует мок-команды (`docker/ip/ss`) для детерминированной проверки логики `env-init/preflight` в CI, без зависимости от конкретной сетевой конфигурации раннера.
+
+---
+
+## 6) Подводные камни (важно)
 
 1. **`WG_SERVER_URL=auto` на VPS** может дать не тот endpoint для клиентов.
    - Лучше всегда задавать явный IP/DNS.
@@ -148,7 +173,7 @@ curl -s http://localhost:8088/status   # только NAT-режим
 
 ---
 
-## 6) Чеклист перед продом
+## 7) Чеклист перед продом
 
 - [ ] Выбран только один режим (VPS или NAT)
 - [ ] Проверены порты: UDP `WG_PORT`, TCP `API_PORT`
