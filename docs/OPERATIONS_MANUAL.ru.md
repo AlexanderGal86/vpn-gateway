@@ -25,7 +25,7 @@
 
 **Команда**
 ```bash
-make docker-up
+make up MODE=vps
 ```
 
 ---
@@ -43,7 +43,7 @@ make docker-up
 
 **Команда**
 ```bash
-make docker-local-up
+make up MODE=home-vm
 ```
 
 ### Режим C: Home Desktop (Windows/macOS Docker Desktop)
@@ -54,7 +54,7 @@ make docker-local-up
 - macvlan недоступен/нежелателен.
 
 **Что меняется**
-- net-manager переводится в host mode override.
+- net-manager остаётся в обычной bridge-сети Compose (без macvlan).
 
 **Команда**
 ```bash
@@ -114,11 +114,11 @@ make status-all MODE=vps
 - `home-desktop` (Docker Desktop)
 
 ```bash
-make docker-up           # VPS
-make docker-down
+make up MODE=vps
+make down MODE=vps
 
-make docker-local-up     # NAT
-make docker-local-down
+make up MODE=home-vm
+make down MODE=home-vm
 ```
 
 ### Быстрая диагностика
@@ -142,7 +142,7 @@ curl -s http://localhost:8088/status   # только NAT-режим
   - `rust-tests` → `make test`
   - `mode-automation` → `./scripts/test-mode-automation.sh`
 
-`test-mode-automation.sh` использует мок-команды (`docker/ip/ss`) для детерминированной проверки логики `env-init/preflight` в CI, без зависимости от конкретной сетевой конфигурации раннера.
+`test-mode-automation.sh` выполняет реальные проверки `env-init/preflight` для всех режимов. Если в окружении нет `docker` или `ip`, runtime-проверки пропускаются с предупреждением.
 
 ---
 
