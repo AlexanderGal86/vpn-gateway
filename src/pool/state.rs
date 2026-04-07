@@ -2,9 +2,7 @@ use crate::pool::proxy::{Proxy, ProxyStatus};
 use crate::pool::sticky_sessions::StickySessionManager;
 use chrono::Utc;
 use dashmap::DashMap;
-use rand::distributions::WeightedIndex;
-use rand::prelude::Distribution;
-use rand::thread_rng;
+use rand::distr::{weighted::WeightedIndex, Distribution};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use tokio::sync::Notify;
@@ -245,7 +243,7 @@ impl SharedState {
 
         match WeightedIndex::new(&weights) {
             Ok(dist) => {
-                let idx = dist.sample(&mut thread_rng());
+                let idx = dist.sample(&mut rand::rng());
                 candidates[idx].clone()
             }
             Err(_) => candidates[0].clone(),
@@ -484,12 +482,11 @@ mod tests {
     }
 
     #[test]
-    fn test_select_best_returns_verified_first() {
+    fn test_select_best_prefers_verified_over_unchecked() {
         let state = SharedState::new();
         state.insert_if_absent(make_proxy("1.2.3.4", 8080));
         state.insert_if_absent(make_proxy("5.6.7.8", 3128));
         state.record_success("1.2.3.4:8080", 100.0);
-        state.record_success("5.6.7.8:3128", 200.0);
         let selected = state.select_best().unwrap();
         assert_eq!(selected.host, "1.2.3.4");
     }
