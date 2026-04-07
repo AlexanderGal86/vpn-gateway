@@ -25,7 +25,7 @@
 
 **Команда**
 ```bash
-make docker-up
+make up MODE=vps
 ```
 
 ---
@@ -43,7 +43,7 @@ make docker-up
 
 **Команда**
 ```bash
-make docker-local-up
+make up MODE=home-vm
 ```
 
 ### Режим C: Home Desktop (Windows/macOS Docker Desktop)
@@ -114,11 +114,11 @@ make status-all MODE=vps
 - `home-desktop` (Docker Desktop)
 
 ```bash
-make docker-up           # VPS
-make docker-down
+make up MODE=vps
+make down MODE=vps
 
-make docker-local-up     # NAT
-make docker-local-down
+make up MODE=home-vm
+make down MODE=home-vm
 ```
 
 ### Быстрая диагностика

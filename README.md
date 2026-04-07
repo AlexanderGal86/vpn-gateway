@@ -327,12 +327,13 @@ CONFIG_PATH=path/to/custom.json cargo run
 
 ### Docker Deployment Modes
 
-| Mode | Command | Use Case |
-|------|---------|----------|
-| **Full** | `make docker-full-up` | Production VPS with UPnP + macvlan |
-| **Dev** | `make docker-dev-up` | Development without macvlan |
-| **Local** | `make docker-local-up` | Local network, no net-manager |
-| **VPS** | `make docker-up` | Basic VPS deployment |
+| Mode | Unified command | Compose files | Use case |
+|------|------------------|---------------|----------|
+| **VPS** | `make up MODE=vps` | `docker-compose.yml` | Public VPS/host with explicit `WG_SERVER_URL` |
+| **Home VM (NAT)** | `make up MODE=home-vm` | `docker-compose-local.yml` | Home Linux VM behind router NAT, with `net-manager` + macvlan |
+| **Home Desktop** | `make up MODE=home-desktop` | `docker-compose-local.yml` + `docker-compose-dev.yml` | Docker Desktop development without macvlan |
+
+Legacy aliases are still available: `make docker-up`, `make docker-local-up`, `make docker-dev-up`, `make docker-full-up`.
 
 ### Configuration
 
@@ -641,15 +642,19 @@ make fmt                # Check formatting
 make fmt-fix            # Auto-fix formatting
 make check              # lint + fmt + test
 
-# Docker
-make docker-up          # VPS mode
-make docker-down        # Stop VPS
-make docker-local-up    # Local network mode
-make docker-local-down  # Stop local
-make docker-full-up     # Full stack (VPS + net-manager + UPnP)
-make docker-full-down   # Stop full stack
-make docker-dev-up      # Dev mode (no macvlan)
-make docker-dev-down    # Stop dev
+# Docker (unified mode-first)
+make up MODE=vps
+make down MODE=vps
+make up MODE=home-vm
+make down MODE=home-vm
+make up MODE=home-desktop
+make down MODE=home-desktop
+
+# Legacy aliases (still supported)
+make docker-up          # alias for VPS startup
+make docker-local-up    # alias for home-vm startup
+make docker-dev-up      # alias for home-desktop startup
+make docker-full-up     # alias for docker-local-up
 make docker-logs        # Follow logs
 
 # Utilities
