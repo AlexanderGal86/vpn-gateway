@@ -4,6 +4,13 @@ Transparent TCP/UDP proxy gateway with a dynamic pool of free proxy servers, Wir
 
 ## Overview
 
+## Operational docs
+
+- Full operations manual (RU): `docs/OPERATIONS_MANUAL.ru.md`
+- Architecture rethink (RU): `docs/ARCHITECTURE_RETHINK.ru.md`
+
+---
+
 VPN Gateway automatically discovers, validates, and rotates through 1000+ free proxy servers from public lists. TCP traffic from WireGuard clients is transparently proxied through the best-performing servers, selected via EWMA latency scoring and circuit breaker patterns. UDP traffic (including DNS) is relayed through a dedicated channel with Unbound DNS resolver for leak prevention.
 
 ### Key Features
