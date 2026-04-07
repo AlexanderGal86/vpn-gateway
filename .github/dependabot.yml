@@ -6,9 +6,6 @@ updates:
       interval: weekly
       day: monday
     open-pull-requests-limit: 5
-    labels:
-      - dependencies
-      - rust
 
   - package-ecosystem: pip
     directory: /services/net-manager
@@ -16,15 +13,9 @@ updates:
       interval: weekly
       day: monday
     open-pull-requests-limit: 3
-    labels:
-      - dependencies
-      - python
 
   - package-ecosystem: github-actions
     directory: /
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
-    labels:
-      - dependencies
-      - ci
