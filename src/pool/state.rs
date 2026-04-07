@@ -2,9 +2,7 @@ use crate::pool::proxy::{Proxy, ProxyStatus};
 use crate::pool::sticky_sessions::StickySessionManager;
 use chrono::Utc;
 use dashmap::DashMap;
-use rand::distributions::WeightedIndex;
-use rand::prelude::Distribution;
-use rand::thread_rng;
+use rand::distr::{weighted::WeightedIndex, Distribution};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use tokio::sync::Notify;
@@ -245,7 +243,7 @@ impl SharedState {
 
         match WeightedIndex::new(&weights) {
             Ok(dist) => {
-                let idx = dist.sample(&mut thread_rng());
+                let idx = dist.sample(&mut rand::rng());
                 candidates[idx].clone()
             }
             Err(_) => candidates[0].clone(),
