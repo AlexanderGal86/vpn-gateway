@@ -27,10 +27,5 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Show Docker versions
-        run: |
-          docker --version
-          docker compose version
-
       - name: Run mode automation checks
         run: ./scripts/test-mode-automation.sh
