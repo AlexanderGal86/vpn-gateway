@@ -1,3 +1,11 @@
+> [!IMPORTANT]
+> Этот документ исторический и частично устаревший по операционному UX.
+> Актуальные инструкции по запуску и режимам находятся в:
+> - `docs/OPERATIONS_MANUAL.ru.md`
+> - `README.md` (раздел **Current deployment modes (actual)**)
+>
+> Актуальная автоматизация режимов: `make env-init/preflight/up/down/status-all` + CI workflow `/.github/workflows/ci-mode-tests.yml`.
+
 # Code Review: VPN Gateway - Architecture Analysis & Improvement Plan
 
 ## Status: ALL 5 STAGES COMPLETED

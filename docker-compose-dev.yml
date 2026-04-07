@@ -1,13 +1,14 @@
-# Override for Windows/macOS Docker Desktop where macvlan doesn't work.
-# Usage: docker compose -f docker-compose.yml -f docker-compose-dev.yml up
+# Override for Docker Desktop / generic local dev where macvlan is unavailable.
+# Usage: docker compose -f docker-compose-local.yml -f docker-compose-dev.yml up
 
 services:
   net-manager:
-    network_mode: host
-    networks: []
+    # Keep net-manager inside Compose networking; just remove macvlan attachment.
+    networks:
+      - vpn-internal
     environment:
-      - NET_MANAGER_MODE=host
-      - DOCKER_HOST_IP=${DOCKER_HOST_IP:-127.0.0.1}
+      - NET_MANAGER_MODE=bridge
+      - DOCKER_HOST_IP=${DOCKER_HOST_IP:-host.docker.internal}
 
 networks:
   ext_net:
