@@ -16,26 +16,12 @@ make clean              # cargo clean
 make bench              # cargo bench --bench proxy_bench
 ```
 
-### Deployment Commands (MODE=vps|home-vm|home-desktop)
+### Docker Commands
 
 ```bash
-make env-init           # Initialize .env for deployment mode
-make preflight          # Validate env/network/compose before deploy
-make up                 # Unified startup (runs preflight first)
-make down               # Unified shutdown
-make status-all         # Health + metrics (+net-manager for home modes)
-make test-modes         # Run mode automation checks
-```
-
-### Legacy Docker Commands
-
-```bash
-make docker-up          # Docker Compose for VPS deployment
-make docker-local-up    # Docker Compose for Home VM mode
-make docker-dev-up      # Docker Compose for Home Desktop mode
-make docker-down        # Stop VPS containers
-make docker-local-down  # Stop Home VM containers
-make docker-dev-down    # Stop Home Desktop containers
+make docker-up          # Start Docker container (docker-compose.yml)
+make docker-down        # Stop Docker container
+make docker-logs        # Show Docker logs
 ```
 
 ### Utility Commands
@@ -67,35 +53,13 @@ To create a release: `git tag v0.x.0 && git push --tags`
 
 Rust (tokio async) transparent TCP/UDP proxy gateway that routes traffic through a dynamic pool of free proxy servers. Runs on Linux with iptables redirecting WireGuard client traffic to the gateway.
 
-### Deployment Modes
+### Deployment
 
-Three deployment modes, selected via `MODE` environment variable:
-
-**VPS Simple Mode** (`docker-compose-vps-simple.yml`, `MODE=vps`):
-- Single container with `network_mode: host`
-- WireGuard + Unbound DNS + Gateway + iptables all in one process
+Single-container deployment with `network_mode: host`:
+- `docker-compose.yml` — single container, all-in-one
+- WireGuard + Unbound DNS + Gateway + iptables in one process
 - Entrypoint: `scripts/entrypoint-simple.sh`
-- No net-manager, no macvlan — simplest for VPS
-
-**Home VM Mode** (`docker-compose-local.yml`, `MODE=home-vm`):
-- 4-service stack: wireguard, vpn-gateway, unbound, net-manager
-- net-manager on macvlan for UPnP + DHCP
-- ext_net (macvlan) + vpn-internal (bridge 172.20.0.0/24)
-
-**Home Desktop Mode** (`docker-compose-local.yml` + `docker-compose-dev.yml`, `MODE=home-desktop`):
-- Same as Home VM but without macvlan (Docker Desktop compatibility)
-
-### Home VM Mode Architecture (4-Service)
-
-```
-ext_net (macvlan) ──── net-manager (Python: UPnP, DHCP, config gen, :8088)
-                            │
-vpn-internal (bridge) ──────┤
-                            │
-                       wireguard (:51820/udp, wg0: 10.13.13.0/24)
-                            ├── vpn-gateway (Rust, :1080 TCP proxy, :8080 API)
-                            └── unbound (DNS, :53)
-```
+- API bound to `10.13.13.1` (WireGuard interface only)
 
 ### Startup Sequence (4-level fast-start in `src/main.rs`)
 
@@ -109,8 +73,8 @@ vpn-internal (bridge) ──────┤
 - **`src/pool/`** — Proxy pool management
   - `state.rs` — `SharedState` (DashMap-based), banned list, geo-index, `exclude_countries` filter, `with_config()` constructor
   - `proxy.rs` — Proxy entry with EWMA latency scoring and circuit breaker
-  - `source_manager.rs` — Fetches proxies from 11 hardcoded sources + `config/sources.json`
-  - `health_checker.rs` — Fast probe and continuous health check loop
+  - `source_manager.rs` — Fetches proxies from 27 hardcoded sources + `config/sources.json`
+  - `health_checker.rs` — 3-stage health check (TCP + CONNECT + TLS validation) with MITM detection
   - `persistence.rs` — Save/load `data/state.json`
   - `sticky_sessions.rs` — Client IP to proxy affinity
   - `connection_pool.rs` — Optional TCP connection reuse
@@ -123,34 +87,25 @@ vpn-internal (bridge) ──────┤
   - `sniff.rs` — TLS SNI extraction from ClientHello
   - `udp.rs` — UDP relay on :1081, configurable DNS upstream
 
-- **`src/api/web.rs`** — Axum 0.8 HTTP API on :8080 (/health, /metrics, /api/proxies, ban/unban)
+- **`src/api/web.rs`** — Axum 0.8 HTTP API on :8080 (/health, /metrics, /api/proxies, ban/unban), bound to `api_bind` (default `10.13.13.1`)
 - **`src/config.rs`** — JSON config with hot-reload support, `ConfigManager` with Notify-based shutdown
-
-- **`services/net-manager/`** — Python sidecar for network management (Home VM mode only)
-  - `upnp_client.py` — UPnP IGD port forwarding
-  - `config_generator.py` — WireGuard client config generation (LAN + WAN variants, QR codes)
-  - `web_server.py` — Flask HTTP server for config distribution (:8088)
-  - `net_manager.py` — Main loop: IP monitoring, UPnP renewal, config regeneration
 
 ### Scripts
 
 | Script | Purpose |
 |--------|---------|
-| `entrypoint-simple.sh` | VPS Simple Mode: WG + Unbound + Gateway in one container |
-| `entrypoint.sh` | Standard Docker entrypoint (WireGuard + iptables kill-switch) |
-| `entrypoint-local.sh` | Local/dev mode entrypoint |
-| `env-init.sh` | Initialize .env for deployment mode |
-| `preflight.sh` | Validate environment/network/compose before deploy |
+| `entrypoint-simple.sh` | Docker entrypoint: WG + Unbound + iptables + Gateway |
 | `install.sh` | System-level install helper |
 | `client-setup.sh` | WireGuard client config helper |
 | `backup.sh` | Backup state and configs |
 | `generate_wg_keys.sh` | Generate WireGuard key pairs |
-| `test-mode-automation.sh` | CI: test mode switching automation |
 
 ### Key Design Patterns
 
 - All state flows through `SharedState` (clone of Arc-wrapped DashMap collections)
 - Proxy selection uses EWMA-weighted latency with circuit breaker pattern + `exclude_countries` filtering
+- **Two-tier proxy pool**: proxies marked `tls_clean` (true/false/unknown) — HTTPS traffic (port 443) uses only TLS-clean proxies, HTTP uses any
+- **MITM detection**: 3-stage health check validates TLS certificates through proxy tunnel using rustls + webpki-roots
 - Single-pass top-N selection (`collect_top_n`) — O(n) scan, O(10) memory per selection
 - Bounded concurrency: TCP connections (Semaphore from config `max_connections`), UDP tasks (Semaphore, 1000), GeoIP lookups (Semaphore, 20)
 - Pool size enforced via `max_proxies` config (AtomicUsize in SharedState)
@@ -161,6 +116,7 @@ vpn-internal (bridge) ──────┤
 - Config lives in `config/gateway.json`, proxy sources in `config/sources.json`
 - Persistent state in `data/state.json` (auto-saved periodically)
 - Target platform is Linux (uses `nix` crate for SO_ORIGINAL_DST, iptables for traffic redirection)
+- iptables: only FORWARD + NAT rules (INPUT/OUTPUT untouched — VPS hoster manages those)
 
 ### Configuration
 
@@ -169,8 +125,9 @@ vpn-internal (bridge) ──────┤
 {
   "gateway_port": 1080,
   "api_port": 8080,
+  "api_bind": "10.13.13.1",
   "udp_port": 1081,
-  "max_proxies": 5000,
+  "max_proxies": 10000,
   "max_connections": 10000,
   "health_check_interval": 30,
   "source_update_interval": 300,
@@ -185,36 +142,26 @@ vpn-internal (bridge) ──────┤
 |------|---------|
 | 1080 | Transparent TCP proxy |
 | 1081 | UDP relay |
-| 5353 | Unbound DNS (VPS Simple Mode) |
-| 8080 | Gateway API/metrics |
-| 8088 | net-manager config server (Home VM only) |
+| 5353 | Unbound DNS |
+| 8080 | Gateway API/metrics (bound to 10.13.13.1) |
 | 51820/udp | WireGuard |
 
 ### Docker
 
-Three compose files + mode-aware Makefile targets:
-- `docker-compose-vps-simple.yml` — VPS simple: single container, `network_mode: host`
-- `docker-compose-local.yml` — Home VM: 4 services with net-manager + macvlan
-- `docker-compose-dev.yml` — Home Desktop override: removes macvlan for Docker Desktop
-
-Use `MODE=vps|home-vm|home-desktop` with `make up`/`make down` for unified control.
-Configure via `.env` file (NET_INTERFACE, LAN_SUBNET, LAN_GATEWAY, DOCKER_HOST_IP, WG_PEERS).
+Single compose file: `docker-compose.yml` — single container with `network_mode: host`.
+Deploy with `make docker-up` / `make docker-down`.
 
 ### Data Directory
 
 ```
 data/
 ├── wg/              # WireGuard keys and configs
-├── wg0.conf         # WireGuard server config (VPS Simple Mode)
-├── unbound/         # Unbound DNS config (VPS Simple Mode)
-├── clients/         # Generated LAN/WAN configs + QR codes (net-manager)
-├── state.json       # Proxy pool state (gateway)
-└── network-status.json  # Current IPs, UPnP status (net-manager)
+├── wg0.conf         # WireGuard server config
+├── unbound/         # Unbound DNS config
+└── state.json       # Proxy pool state (gateway)
 ```
 
 > For full deployment history, see `DEVELOPMENT_HISTORY.md`.
-> For operations manual (RU), see `docs/OPERATIONS_MANUAL.ru.md`.
-> For architecture decisions (RU), see `docs/ARCHITECTURE_RETHINK.ru.md`.
 
 ### Future Work
 
@@ -226,19 +173,19 @@ data/
 
 #### Features
 - [x] Country exclusion filter (`exclude_countries` in config + `select_best()` filtering)
-- [x] VPS Simple Mode (single-container deployment with WireGuard + Unbound + Gateway)
-- [x] Mode-aware deployment tooling (env-init, preflight, unified `make up/down`)
+- [x] Single-container deployment (WireGuard + Unbound + Gateway)
+- [x] MITM detection — 3-stage TLS validation, two-tier proxy pool (`tls_clean`)
+- [x] API bound to WireGuard interface (`10.13.13.1`) — no auth needed
 - [ ] IPv6 SO_ORIGINAL_DST support (`sockaddr_in6` in `transparent.rs`)
-- [ ] DDNS integration for WAN configs (alternative to UPnP external IP)
-- [ ] API authentication (currently relies on WireGuard-only network access)
 - [ ] `preferred_countries` implementation (only `exclude_countries` is done)
 
 #### Technical Debt
 - [x] Config watcher proper lifetime management (replace 60s sleep loop in `config.rs`)
-- [x] Python path traversal sanitization in `web_server.py` (net-manager)
 - [x] Hardcoded DNS upstream `10.13.13.1:53` in `udp.rs` (move to config)
+- [x] Removed broken multi-container architecture (iptables conflicts)
 
 #### Enhancements
 - [x] Geo-index for O(1) country-based proxy selection (`HashMap<country, Vec<proxy_key>>` in `state.rs`)
 - [x] GeoIP lookup cache (`DashMap` in `geo_ip.rs`) to eliminate redundant API requests
 - [x] Prometheus typed metrics — add `# TYPE` / `# HELP` headers to `/metrics` output in `metrics.rs`
+- [x] Expanded proxy sources from 11 to 27 for better pool coverage

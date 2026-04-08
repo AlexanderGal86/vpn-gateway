@@ -39,8 +39,7 @@ if [ ! -f /app/data/wg0.conf ]; then
 Address = 10.13.13.1/24
 ListenPort = ${SERVER_PORT}
 PrivateKey = $(cat /app/data/wg/server.key)
-PostUp = iptables -A FORWARD -i wg0 -j ACCEPT; iptables -A FORWARD -o wg0 -j ACCEPT; iptables -t nat -A POSTROUTING -o eth0 -j MASQUERADE
-PostDown = iptables -D FORWARD -i wg0 -j ACCEPT; iptables -D FORWARD -o wg0 -j ACCEPT; iptables -t nat -D POSTROUTING -o eth0 -j MASQUERADE
+# iptables rules are managed by entrypoint, not wg-quick
 
 EOF
 
@@ -132,35 +131,30 @@ else
     echo "[WARN] Unbound not found, using system DNS"
 fi
 
-# === Minimal iptables ===
-echo "[INIT] Configuring iptables (minimal)..."
-
-# Allow all outbound (no kill switch for VPS mode)
-iptables -P INPUT ACCEPT 2>/dev/null || true
-iptables -P FORWARD ACCEPT 2>/dev/null || true
-iptables -P OUTPUT ACCEPT 2>/dev/null || true
+# === iptables — VPN traffic routing only ===
+# NOTE: INPUT/OUTPUT policies are NOT touched. This runs with network_mode: host
+# on a hosted VPS — the hoster manages SSH, monitoring, and management ports.
+# We only control FORWARD (VPN routing) and NAT (redirect + masquerade).
+echo "[INIT] Configuring iptables (VPN routing only)..."
 
 # Enable forwarding for VPN
 echo 1 > /proc/sys/net/ipv4/ip_forward 2>/dev/null || true
 
-# FORWARD rules for VPN traffic
-iptables -A FORWARD -i wg0 -j ACCEPT 2>/dev/null || true
-iptables -A FORWARD -o wg0 -j ACCEPT 2>/dev/null || true
+# FORWARD: drop by default, allow only VPN traffic
+iptables -P FORWARD DROP 2>/dev/null || true
 iptables -A FORWARD -i wg0 -o eth0 -j ACCEPT 2>/dev/null || true
-iptables -A FORWARD -i eth0 -o wg0 -j ACCEPT 2>/dev/null || true
+iptables -A FORWARD -i eth0 -o wg0 -m state --state ESTABLISHED,RELATED -j ACCEPT 2>/dev/null || true
 
 # NAT for WireGuard
 iptables -t nat -A POSTROUTING -s 10.13.13.0/24 -o eth0 -j MASQUERADE 2>/dev/null || true
 
-# Redirect DNS from WireGuard clients to Unbound (PREROUTING + OUTPUT)
+# Redirect DNS from WireGuard clients to Unbound (PREROUTING only)
 iptables -t nat -A PREROUTING -i wg0 -p udp --dport 53 -j REDIRECT --to-port 5353 2>/dev/null || true
-iptables -t nat -A OUTPUT -o wg0 -p udp --dport 53 -j REDIRECT --to-port 5353 2>/dev/null || true
 
-# Redirect TCP traffic from WireGuard clients to proxy (PREROUTING + OUTPUT)
+# Redirect TCP traffic from WireGuard clients to proxy (PREROUTING only)
 iptables -t nat -A PREROUTING -i wg0 -p tcp -j REDIRECT --to-port 1080 2>/dev/null || true
-iptables -t nat -A OUTPUT -o wg0 -p tcp -j REDIRECT --to-port 1080 2>/dev/null || true
 
-echo "[INIT] iptables configured (minimal mode)"
+echo "[INIT] iptables configured (VPN routing only, INPUT/OUTPUT untouched)"
 
 # === Show network info ===
 echo "[INIT] Network status:"

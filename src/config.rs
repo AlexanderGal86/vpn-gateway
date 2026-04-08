@@ -60,6 +60,9 @@ pub struct Config {
 
     #[serde(default = "default_dns_upstream")]
     pub dns_upstream: String,
+
+    #[serde(default = "default_api_bind")]
+    pub api_bind: String,
 }
 
 fn default_gateway_port() -> u16 {
@@ -101,6 +104,9 @@ fn default_connection_pool_max_per_proxy() -> usize {
 fn default_sticky_session_ttl() -> u64 {
     300
 }
+fn default_api_bind() -> String {
+    "10.13.13.1".to_string()
+}
 
 impl Default for Config {
     fn default() -> Self {
@@ -123,6 +129,7 @@ impl Default for Config {
             sticky_session_ttl: default_sticky_session_ttl(),
             enable_sticky_sessions: false,
             dns_upstream: default_dns_upstream(),
+            api_bind: default_api_bind(),
         }
     }
 }

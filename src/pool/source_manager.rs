@@ -14,12 +14,28 @@ fn default_sources() -> Vec<(&'static str, Protocol)> {
         ("https://raw.githubusercontent.com/ShiftyTR/Proxy-List/master/http.txt", Protocol::Http),
         ("https://www.proxy-list.download/api/v1/get?type=http", Protocol::Http),
         ("https://raw.githubusercontent.com/clarketm/proxy-list/master/proxy-list-raw.txt", Protocol::Http),
+        ("https://raw.githubusercontent.com/mmpx12/proxy-list/master/http.txt", Protocol::Http),
+        ("https://raw.githubusercontent.com/prxchk/proxy-list/main/http.txt", Protocol::Http),
+        ("https://raw.githubusercontent.com/zloi-user/hideip.me/main/http.txt", Protocol::Http),
+        ("https://raw.githubusercontent.com/rdavydov/proxy-list/main/proxies/http.txt", Protocol::Http),
+        ("https://raw.githubusercontent.com/saschazesiger/Free-Proxies/master/proxies/http.txt", Protocol::Http),
+        ("https://raw.githubusercontent.com/UptimerBot/proxy-list/main/proxies/http.txt", Protocol::Http),
+        ("https://raw.githubusercontent.com/MuRongPIG/Proxy-Master/main/http.txt", Protocol::Http),
+        ("https://raw.githubusercontent.com/sunny9577/proxy-scraper/master/generated/http_proxies.txt", Protocol::Http),
+        ("https://raw.githubusercontent.com/ErcinDedeworx/proxy-list/main/proxy-list/data.txt", Protocol::Http),
         // SOCKS5 proxy lists
         ("https://api.proxyscrape.com/v2/?request=getproxies&protocol=socks5&timeout=5000&country=all", Protocol::Socks5),
         ("https://raw.githubusercontent.com/TheSpeedX/PROXY-List/master/socks5.txt", Protocol::Socks5),
         ("https://raw.githubusercontent.com/monosans/proxy-list/main/proxies/socks5.txt", Protocol::Socks5),
         ("https://raw.githubusercontent.com/ShiftyTR/Proxy-List/master/socks5.txt", Protocol::Socks5),
         ("https://www.proxy-list.download/api/v1/get?type=socks5", Protocol::Socks5),
+        ("https://raw.githubusercontent.com/mmpx12/proxy-list/master/socks5.txt", Protocol::Socks5),
+        ("https://raw.githubusercontent.com/prxchk/proxy-list/main/socks5.txt", Protocol::Socks5),
+        ("https://raw.githubusercontent.com/zloi-user/hideip.me/main/socks5.txt", Protocol::Socks5),
+        ("https://raw.githubusercontent.com/hookzof/socks5_list/master/proxy.txt", Protocol::Socks5),
+        ("https://raw.githubusercontent.com/rdavydov/proxy-list/main/proxies/socks5.txt", Protocol::Socks5),
+        ("https://raw.githubusercontent.com/saschazesiger/Free-Proxies/master/proxies/socks5.txt", Protocol::Socks5),
+        ("https://raw.githubusercontent.com/UptimerBot/proxy-list/main/proxies/socks5.txt", Protocol::Socks5),
     ]
 }
 

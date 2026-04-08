@@ -344,6 +344,54 @@ impl SharedState {
         self.proxy_rotations.fetch_add(1, Ordering::Relaxed);
     }
 
+    /// Set TLS validation result for a proxy
+    pub fn set_tls_clean(&self, key: &str, clean: bool) {
+        if let Some(mut p) = self.proxies.get_mut(key) {
+            p.tls_clean = Some(clean);
+        }
+    }
+
+    /// Select best proxy for HTTPS traffic (only tls_clean = true).
+    /// Falls back to any available proxy if no TLS-clean proxies exist.
+    pub fn select_best_for_tls(&self) -> Option<Proxy> {
+        let excluded: Vec<String> = self
+            .exclude_countries
+            .read()
+            .ok()
+            .map(|g| g.clone())
+            .unwrap_or_default();
+
+        // Tier 1: Verified + TLS-clean
+        let top = self.collect_top_n(|p| {
+            p.is_available()
+                && matches!(&p.status, Some(ProxyStatus::Verified))
+                && p.tls_clean == Some(true)
+                && !excluded
+                    .iter()
+                    .any(|c| p.country.as_ref().map(|pc| pc == c).unwrap_or(false))
+        });
+        if !top.is_empty() {
+            return Some(Self::weighted_random_select(&top));
+        }
+
+        // Tier 2: PresumedAlive + TLS-clean (from state.json)
+        let top = self.collect_top_n(|p| {
+            p.is_available()
+                && matches!(&p.status, Some(ProxyStatus::PresumedAlive))
+                && p.tls_clean == Some(true)
+                && !excluded
+                    .iter()
+                    .any(|c| p.country.as_ref().map(|pc| pc == c).unwrap_or(false))
+        });
+        if !top.is_empty() {
+            return Some(Self::weighted_random_select(&top));
+        }
+
+        // Fallback: any available proxy (better MITM than nothing)
+        tracing::warn!("No TLS-clean proxies available, falling back to unverified");
+        self.select_best()
+    }
+
     // === Counts ===
 
     pub fn total_count(&self) -> usize {
@@ -364,6 +412,20 @@ impl SharedState {
     #[allow(dead_code)]
     pub fn is_empty(&self) -> bool {
         self.available_count() == 0
+    }
+
+    pub fn tls_clean_count(&self) -> usize {
+        self.proxies
+            .iter()
+            .filter(|p| p.tls_clean == Some(true))
+            .count()
+    }
+
+    pub fn tls_dirty_count(&self) -> usize {
+        self.proxies
+            .iter()
+            .filter(|p| p.tls_clean == Some(false))
+            .count()
     }
 
     // === Bulk operations ===
@@ -731,5 +793,80 @@ mod tests {
             "Selected proxy latency {} should be in top-10 range",
             selected.latency_ewma
         );
+    }
+
+    #[test]
+    fn test_set_tls_clean() {
+        let state = SharedState::new();
+        state.insert_if_absent(make_proxy("1.2.3.4", 8080));
+        state.record_success("1.2.3.4:8080", 100.0);
+
+        // Initially None
+        assert_eq!(state.proxies.get("1.2.3.4:8080").unwrap().tls_clean, None);
+
+        // Set to clean
+        state.set_tls_clean("1.2.3.4:8080", true);
+        assert_eq!(
+            state.proxies.get("1.2.3.4:8080").unwrap().tls_clean,
+            Some(true)
+        );
+
+        // Set to dirty
+        state.set_tls_clean("1.2.3.4:8080", false);
+        assert_eq!(
+            state.proxies.get("1.2.3.4:8080").unwrap().tls_clean,
+            Some(false)
+        );
+    }
+
+    #[test]
+    fn test_tls_counts() {
+        let state = SharedState::new();
+        state.insert_if_absent(make_proxy("1.1.1.1", 8080));
+        state.insert_if_absent(make_proxy("2.2.2.2", 8080));
+        state.insert_if_absent(make_proxy("3.3.3.3", 8080));
+
+        state.record_success("1.1.1.1:8080", 100.0);
+        state.record_success("2.2.2.2:8080", 100.0);
+        state.record_success("3.3.3.3:8080", 100.0);
+
+        state.set_tls_clean("1.1.1.1:8080", true);
+        state.set_tls_clean("2.2.2.2:8080", false);
+        // 3.3.3.3 remains None
+
+        assert_eq!(state.tls_clean_count(), 1);
+        assert_eq!(state.tls_dirty_count(), 1);
+    }
+
+    #[test]
+    fn test_select_best_for_tls_prefers_clean() {
+        let state = SharedState::new();
+        state.insert_if_absent(make_proxy("1.1.1.1", 8080));
+        state.insert_if_absent(make_proxy("2.2.2.2", 8080));
+
+        state.record_success("1.1.1.1:8080", 100.0);
+        state.record_success("2.2.2.2:8080", 100.0);
+
+        state.set_tls_clean("1.1.1.1:8080", true);
+        state.set_tls_clean("2.2.2.2:8080", false);
+
+        // select_best_for_tls should only return the clean proxy
+        for _ in 0..20 {
+            let p = state.select_best_for_tls().unwrap();
+            assert_eq!(p.host, "1.1.1.1", "Should only select TLS-clean proxy");
+        }
+    }
+
+    #[test]
+    fn test_select_best_for_tls_fallback_when_no_clean() {
+        let state = SharedState::new();
+        state.insert_if_absent(make_proxy("1.1.1.1", 8080));
+
+        state.record_success("1.1.1.1:8080", 100.0);
+        state.set_tls_clean("1.1.1.1:8080", false);
+
+        // No clean proxies — should fall back to select_best
+        let p = state.select_best_for_tls();
+        assert!(p.is_some(), "Should fall back to unverified proxy");
     }
 }

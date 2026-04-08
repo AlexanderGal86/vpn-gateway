@@ -53,6 +53,11 @@ pub struct Proxy {
     pub manual: bool,
     pub priority_boost: f64,
 
+    // === TLS validation ===
+    /// TLS validation result: None = not checked, Some(true) = clean, Some(false) = MITM
+    #[serde(default)]
+    pub tls_clean: Option<bool>,
+
     // === Runtime-only (skip serialization) ===
     #[serde(skip)]
     pub status: Option<ProxyStatus>,
@@ -77,6 +82,7 @@ impl Proxy {
             country: None,
             manual: false,
             priority_boost: 0.0,
+            tls_clean: None,
             status: Some(ProxyStatus::Unchecked),
             circuit_open_until: None,
         }
