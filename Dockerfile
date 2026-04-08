@@ -34,17 +34,9 @@ WORKDIR /app
 RUN mkdir -p /app/data /app/config
 
 COPY --from=builder /app/target/release/vpn-gateway /usr/local/bin/vpn-gateway
-COPY scripts/entrypoint.sh /entrypoint.sh
-COPY scripts/entrypoint-local.sh /entrypoint-local.sh
 COPY scripts/entrypoint-simple.sh /entrypoint-simple.sh
-COPY scripts/debug-entrypoint.sh /debug-entrypoint.sh
-COPY scripts/run-gateway.sh /run-gateway.sh
 COPY config/ /app/config/
 
-RUN chmod +x /entrypoint.sh /entrypoint-local.sh /entrypoint-simple.sh /run-gateway.sh
+RUN chmod +x /entrypoint-simple.sh
 
-# Default: use local entrypoint (no WireGuard)
-ENV GATEWAY_MODE=local
-
-# Use local entrypoint by default
-ENTRYPOINT ["/entrypoint-local.sh"]
+ENTRYPOINT ["/entrypoint-simple.sh"]

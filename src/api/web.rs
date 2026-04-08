@@ -309,9 +309,9 @@ pub fn create_router(state: SharedState) -> Router {
         .with_state(state)
 }
 
-pub async fn run(state: SharedState, port: u16) -> anyhow::Result<()> {
+pub async fn run(state: SharedState, bind: &str, port: u16) -> anyhow::Result<()> {
     let app = create_router(state);
-    let addr = format!("0.0.0.0:{}", port);
+    let addr = format!("{}:{}", bind, port);
     let listener = tokio::net::TcpListener::bind(&addr).await?;
     tracing::info!("Web API listening on {}", addr);
     axum::serve(listener, app).await?;

@@ -113,8 +113,10 @@ async fn main() -> anyhow::Result<()> {
 
     // Web API
     let api_state = state.clone();
+    let api_bind = config.api_bind.clone();
+    let api_port = config.api_port;
     handles.push(tokio::spawn(async move {
-        if let Err(e) = api::web::run(api_state, config.api_port).await {
+        if let Err(e) = api::web::run(api_state, &api_bind, api_port).await {
             tracing::error!("Web API error: {}", e);
         }
     }));

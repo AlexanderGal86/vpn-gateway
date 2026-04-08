@@ -4,39 +4,17 @@ Transparent TCP/UDP proxy gateway with a dynamic pool of free proxy servers, Wir
 
 ## Overview
 
-## Operational docs
+VPN Gateway automatically discovers, validates, and rotates through 1000+ free proxy servers from 27 public sources. TCP traffic from WireGuard clients is transparently proxied through the best-performing servers, selected via EWMA latency scoring and circuit breaker patterns. UDP traffic (including DNS) is relayed through a dedicated channel with Unbound DNS resolver for leak prevention.
 
-- Full operations manual (RU): `docs/OPERATIONS_MANUAL.ru.md`
-- Architecture rethink (RU): `docs/ARCHITECTURE_RETHINK.ru.md`
-
-## Current deployment modes (actual)
-
-Use unified mode-aware commands:
-
-```bash
-make env-init MODE=vps|home-vm|home-desktop
-make up MODE=vps|home-vm|home-desktop
-make status-all MODE=vps|home-vm|home-desktop
-make down MODE=vps|home-vm|home-desktop
-```
-
-Mode mapping:
-- `vps` → `docker-compose.yml`
-- `home-vm` → `docker-compose-local.yml` (net-manager + macvlan)
-- `home-desktop` → `docker-compose-local.yml` + `docker-compose-dev.yml`
-
-CI note:
-- `.github/workflows/ci-mode-tests.yml` runs `make test` and `./scripts/test-mode-automation.sh`.
-
----
-
-VPN Gateway automatically discovers, validates, and rotates through 1000+ free proxy servers from public lists. TCP traffic from WireGuard clients is transparently proxied through the best-performing servers, selected via EWMA latency scoring and circuit breaker patterns. UDP traffic (including DNS) is relayed through a dedicated channel with Unbound DNS resolver for leak prevention.
+MITM proxies (common in free proxy pools) are automatically detected via TLS certificate validation and marked — HTTPS traffic is routed only through TLS-clean proxies, while HTTP traffic uses any available proxy to maximize pool utilization.
 
 ### Key Features
 
 - **Transparent proxying** — iptables REDIRECT + `SO_ORIGINAL_DST` for zero-config client setup
 - **Smart proxy selection** — EWMA-weighted latency scoring with Top-N random selection
 - **Circuit breaker** — Escalating backoff (60s → 300s → 3600s → permanent ban) for failing proxies
+- **MITM detection** — 3-stage TLS validation (TCP + CONNECT + certificate check via rustls)
+- **Two-tier proxy pool** — TLS-clean proxies for HTTPS, any proxy for HTTP (pool never empties)
 - **4-level fast startup** — Instant state restore → fast bootstrap → full refresh → continuous health checks
 - **Protocol support** — HTTP CONNECT and SOCKS5 upstream, TLS SNI extraction for routing
 - **Connection pooling** — Optional TCP connection reuse to reduce handshake overhead
@@ -55,44 +33,29 @@ VPN Gateway automatically discovers, validates, and rotates through 1000+ free p
 
 ### Docker Service Topology
 
+Single container with `network_mode: host`:
+
 ```
-                    ┌──────────────────────────────────────────────────────────────┐
-                    │                    Docker Host                               │
-                    │                                                              │
- Internet ◄────────┤  ┌─────────────────────────────────────────────────────────┐  │
-   :51820/udp       │  │  wireguard (linuxserver/wireguard)                     │  │
-                    │  │  ├── wg0: 10.13.13.0/24 (VPN subnet)                  │  │
-                    │  │  ├── iptables REDIRECT → :1080 (TCP) / :1081 (UDP)    │  │
-                    │  │  │                                                     │  │
-                    │  │  │  ┌─────────────────────────────────────────────┐    │  │
-                    │  │  │  │  vpn-gateway (Rust)  [network_mode: service]│    │  │
-                    │  │  │  │  ├── :1080  Transparent TCP Proxy           │    │  │
-                    │  │  │  │  ├── :1081  UDP Relay                       │    │  │
-                    │  │  │  │  └── :8080  REST API / Metrics              │    │  │
-                    │  │  │  └─────────────────────────────────────────────┘    │  │
-                    │  │  │  ┌─────────────────────────────────────────────┐    │  │
-                    │  │  │  │  unbound (DNS)       [network_mode: service]│    │  │
-                    │  │  │  │  └── :53   Recursive DNS resolver           │    │  │
-                    │  │  │  └─────────────────────────────────────────────┘    │  │
-                    │  │  └─────────────────────────────────────────────────────┘  │
-                    │  │                        │                                  │
-                    │  │              vpn-internal (bridge 172.20.0.0/24)          │
-                    │  │                        │                                  │
-                    │  │  ┌─────────────────────┴──────────────────────────────┐   │
-                    │  │  │  net-manager (Python)                              │   │
-                    │  │  │  ├── :8088  Config server (Flask)                  │   │
-                    │  │  │  ├── UPnP IGD port forwarding                     │   │
-                    │  │  │  ├── DHCP IP acquisition                          │   │
-                    │  │  │  └── WireGuard config + QR code generation        │   │
-                    │  │  └────────────────────────────────────────────────────┘   │
-                    │  │                        │                                  │
-                    │  │              ext_net (macvlan on physical NIC)            │
-                    │  │                        │                                  │
-                    │  └────────────────────────┼──────────────────────────────────┘
-                    │                           │                                  │
-                    └───────────────────────────┼──────────────────────────────────┘
-                                                │
-                                           LAN / Router
+  ┌────────────────────────────────────────────────────────────────┐
+  │                    VPS Host (network_mode: host)               │
+  │                                                                │
+  │  Internet ◄──── :51820/udp (WireGuard)                        │
+  │                       │                                        │
+  │                  wg0: 10.13.13.0/24                            │
+  │                       │                                        │
+  │            iptables PREROUTING:                                 │
+  │              TCP → :1080 (proxy)                               │
+  │              UDP:53 → :5353 (DNS)                              │
+  │            FORWARD: wg0↔eth0 only                              │
+  │                       │                                        │
+  │  ┌────────────────────┼────────────────────────────────────┐   │
+  │  │  vpn-gateway (Rust, single container)                   │   │
+  │  │  ├── :1080   Transparent TCP Proxy                      │   │
+  │  │  ├── :1081   UDP Relay                                  │   │
+  │  │  ├── :5353   Unbound DNS                                │   │
+  │  │  └── :8080   REST API (bound to 10.13.13.1)             │   │
+  │  └─────────────────────────────────────────────────────────┘   │
+  └────────────────────────────────────────────────────────────────┘
 ```
 
 ### Traffic Flow
@@ -125,13 +88,18 @@ VPN Gateway automatically discovers, validates, and rotates through 1000+ free p
 ```
   ┌──────────────┐     ┌──────────────┐     ┌──────────────┐     ┌──────────────┐
   │  Discovery   │────►│  Validation  │────►│   Active     │────►│   Retired    │
-  │              │     │              │     │              │     │              │
-  │ 11+ public   │     │ Fast probe   │     │ EWMA scoring │     │ Circuit      │
-  │ source lists │     │ (3s timeout) │     │ Top-N select │     │ breaker      │
-  │ + custom     │     │ TCP connect  │     │ Health check │     │ escalation   │
-  │ sources.json │     │ + HTTP test  │     │ loop (30s)   │     │ or stale     │
+  │              │     │  (3 stages)  │     │              │     │              │
+  │ 27 public    │     │ 1. TCP conn  │     │ EWMA scoring │     │ Circuit      │
+  │ source lists │     │ 2. CONNECT   │     │ Top-N select │     │ breaker      │
+  │ + custom     │     │ 3. TLS cert  │     │ Health check │     │ escalation   │
+  │ sources.json │     │    check     │     │ loop (30s)   │     │ or stale     │
   └──────────────┘     └──────────────┘     └──────────────┘     └──────────────┘
-         │                                         │                     │
+         │                    │                    │                     │
+         │               tls_clean?                │                     │
+         │              ┌────┴────┐                │                     │
+         │              │true│false│                │                     │
+         │              └─┬──┴──┬─┘                │                     │
+         │         HTTPS ok  HTTP only             │                     │
          │              ┌──────────────┐           │                     │
          │              │  Persisted   │◄──────────┘                     │
          │              │  state.json  │           (every 300s)          │
@@ -241,37 +209,12 @@ VPN Gateway automatically discovers, validates, and rotates through 1000+ free p
 ```bash
 git clone https://github.com/alexandergal86/vpn-gateway.git
 cd vpn-gateway
-cp .env.example .env
-```
-
-Edit `.env` to match your network:
-
-```bash
-# Physical NIC (ip link show)
-NET_INTERFACE=eth0
-
-# Your LAN settings
-LAN_SUBNET=192.168.1.0/24
-LAN_GATEWAY=192.168.1.1
-
-# IP range outside DHCP pool for macvlan
-MACVLAN_IP_RANGE=192.168.1.200/29
-
-# Number of WireGuard peers to generate
-WG_PEERS=2
 ```
 
 ### 2. Deploy
 
 ```bash
-# VPS/public IP
-make up MODE=vps
-
-# Home Linux VM behind NAT (with net-manager + macvlan)
-make up MODE=home-vm
-
-# Docker Desktop (macvlan override)
-make up MODE=home-desktop
+make docker-up
 ```
 
 ### 3. Connect WireGuard clients
@@ -325,15 +268,15 @@ Override config path:
 CONFIG_PATH=path/to/custom.json cargo run
 ```
 
-### Docker Deployment Modes
+### Docker Deployment
 
-| Mode | Unified command | Compose files | Use case |
-|------|------------------|---------------|----------|
-| **VPS** | `make up MODE=vps` | `docker-compose.yml` | Public VPS/host with explicit `WG_SERVER_URL` |
-| **Home VM (NAT)** | `make up MODE=home-vm` | `docker-compose-local.yml` | Home Linux VM behind router NAT, with `net-manager` + macvlan |
-| **Home Desktop** | `make up MODE=home-desktop` | `docker-compose-local.yml` + `docker-compose-dev.yml` | Docker Desktop development without macvlan |
+Single-container deployment with `network_mode: host`:
 
-Legacy aliases are still available: `make docker-up`, `make docker-local-up`, `make docker-dev-up`, `make docker-full-up`.
+```bash
+make docker-up     # Start
+make docker-down   # Stop
+make docker-logs   # View logs
+```
 
 ### Configuration
 
@@ -343,12 +286,13 @@ Legacy aliases are still available: `make docker-up`, `make docker-local-up`, `m
 {
   "gateway_port": 1080,
   "api_port": 8080,
+  "api_bind": "10.13.13.1",
   "udp_port": 1081,
-  "max_proxies": 5000,
+  "max_proxies": 10000,
   "max_connections": 10000,
   "health_check_interval": 30,
   "source_update_interval": 300,
-  "preferred_countries": ["US", "DE", "NL"],
+  "exclude_countries": ["RU"],
   "geoip_path": "data/GeoLite2-City.mmdb",
   "state_path": "data/state.json",
   "sources_path": "config/sources.json",
@@ -376,7 +320,7 @@ All fields have sane defaults. The config supports hot-reload — changes are pi
 }
 ```
 
-11 built-in sources are used as fallback if the file is missing or malformed.
+27 built-in sources are used as fallback if the file is missing or malformed.
 
 ### API Reference
 
@@ -551,39 +495,15 @@ After the cooldown period, the proxy is re-tested. If it passes health check, th
 
 ## Entrypoint & iptables
 
-The Docker entrypoint (`scripts/entrypoint.sh`) configures the network stack:
+The Docker entrypoint (`scripts/entrypoint-simple.sh`) configures the network stack:
 
-1. **WireGuard setup** — Brings up `wg0` interface (if `wg0.conf` exists)
-2. **Kill switch** — `iptables OUTPUT DROP` with exceptions for `lo`, `wg0`, and established connections
-3. **DNS redirect** — UDP port 53 → Unbound (:5353)
-4. **TCP redirect** — All TCP traffic → gateway (:1080)
-5. **IPv6 block** — Full `ip6tables` DROP to prevent leaks
+1. **WireGuard setup** — Generates keys and `wg0.conf` if not exists, brings up `wg0` interface
+2. **Unbound DNS** — Starts recursive DNS resolver on `:5353`
+3. **FORWARD policy** — `DROP` by default, allow only `wg0↔eth0` (VPN traffic)
+4. **NAT** — MASQUERADE for WireGuard subnet, PREROUTING REDIRECT for TCP→`:1080` and DNS→`:5353`
+5. **No INPUT/OUTPUT changes** — VPS hoster manages SSH, monitoring, and management ports
 
-This ensures all client traffic is either proxied (TCP) or tunneled (UDP), with no direct internet leaks.
-
----
-
-## net-manager (Python Sidecar)
-
-Located in `services/net-manager/`, this service handles network configuration:
-
-| Module | Purpose |
-|--------|---------|
-| `net_manager.py` | Main orchestrator — IP monitoring, UPnP renewal loop (30s poll) |
-| `upnp_client.py` | miniupnpc wrapper — UPnP IGD port forwarding to router |
-| `config_generator.py` | WireGuard config generation — LAN + WAN variants per peer |
-| `web_server.py` | Flask HTTP server (:8088) — config download + QR codes |
-
-### What it does
-1. Acquires a real LAN IP via macvlan + DHCP
-2. Discovers router via UPnP IGD and forwards WireGuard port
-3. Detects external IP via `GetExternalIPAddress()`
-4. Generates WireGuard configs (LAN variant with local IP, WAN variant with external IP)
-5. Creates QR codes for mobile client setup
-6. Serves configs via HTTP on port 8088
-7. Monitors for IP changes every 30 seconds, regenerates configs on change
-
-> **Note**: macvlan doesn't work on Docker Desktop (Windows/Mac). Use `make docker-dev-up` which keeps `net-manager` on bridge networking (no macvlan).
+**Important**: Runs with `network_mode: host`, so iptables rules apply to the host. INPUT/OUTPUT policies are deliberately left untouched.
 
 ---
 
@@ -593,10 +513,9 @@ Located in `services/net-manager/`, this service handles network configuration:
 |------|----------|---------|
 | 1080 | TCP | Transparent TCP proxy (gateway) |
 | 1081 | UDP | UDP relay (gateway) |
-| 8080 | TCP | REST API and Prometheus metrics (gateway) |
-| 8088 | TCP | Config server (net-manager) |
+| 5353 | UDP | Unbound DNS resolver |
+| 8080 | TCP | REST API and Prometheus metrics (bound to 10.13.13.1) |
 | 51820 | UDP | WireGuard VPN tunnel |
-| 53 | UDP | Unbound DNS resolver |
 
 ---
 
@@ -604,14 +523,12 @@ Located in `services/net-manager/`, this service handles network configuration:
 
 ```
 data/
-├── wg/                  # WireGuard server config (auto-generated)
-├── clients/             # Generated client configs + QR codes
-│   ├── peer1-lan.conf
-│   ├── peer1-wan.conf
-│   ├── peer1-lan.png
-│   └── peer1-wan.png
-├── state.json           # Proxy pool state (auto-saved every 300s)
-└── network-status.json  # Current IPs, UPnP status (net-manager)
+├── wg/                  # WireGuard keys and peer configs
+│   ├── server.key/pub
+│   └── peer1/peer1.conf, peer1-qr.png
+├── wg0.conf             # WireGuard server config (auto-generated)
+├── unbound/             # Unbound DNS config
+└── state.json           # Proxy pool state (auto-saved every 300s)
 ```
 
 ---
@@ -634,27 +551,18 @@ data/
 ```bash
 # Core
 make build              # cargo build --release
-make test               # Run all tests (85 tests)
+make test               # Run all tests
 make run                # Run locally with debug logging
 make clean              # cargo clean
 make lint               # clippy -D warnings
 make fmt                # Check formatting
 make fmt-fix            # Auto-fix formatting
 make check              # lint + fmt + test
+make bench              # Run benchmarks
 
-# Docker (unified mode-first)
-make up MODE=vps
-make down MODE=vps
-make up MODE=home-vm
-make down MODE=home-vm
-make up MODE=home-desktop
-make down MODE=home-desktop
-
-# Legacy aliases (still supported)
-make docker-up          # alias for VPS startup
-make docker-local-up    # alias for home-vm startup
-make docker-dev-up      # alias for home-desktop startup
-make docker-full-up     # alias for docker-local-up
+# Docker
+make docker-up          # Start container
+make docker-down        # Stop container
 make docker-logs        # Follow logs
 
 # Utilities
@@ -666,10 +574,6 @@ make shell              # Shell in gateway container
 make test-connection    # Test SOCKS5 proxy
 make wg-keygen          # Generate WireGuard keys
 make wg-show-configs    # Show client configs
-
-# GeoIP
-make geoip-update       # GeoLite2-City (~68MB)
-make geoip-update-dbip  # DB-IP City Lite (~19MB)
 ```
 
 ---
@@ -684,9 +588,8 @@ make geoip-update-dbip  # DB-IP City Lite (~19MB)
 | WireGuard won't start | Check `wg-quick` installation and `wg0.conf` syntax |
 | DNS leaks | Verify iptables REDIRECT rules + Unbound is running |
 | No proxies loading | Check internet access in container; falls back to `state.json` |
-| macvlan not working | Ensure `NET_INTERFACE` in `.env` matches `ip link show` output |
-| UPnP fails | Router may not support IGD; use manual port forwarding |
-| High latency | Enable `preferred_countries` to filter by geography |
+| `ERR_CERT_AUTHORITY_INVALID` | MITM proxy in use — gateway auto-filters these for HTTPS |
+| High latency | Enable `exclude_countries` to filter by geography |
 | Connection drops | Increase `max_connections` or enable `connection_pool` |
 
 ---
@@ -701,22 +604,22 @@ make geoip-update-dbip  # DB-IP City Lite (~19MB)
 
 ### Features
 - [x] Country exclusion filter (`exclude_countries` in config + `select_best()` filtering)
-- [x] VPS Simple Mode (single-container deployment with WireGuard + Unbound + Gateway)
-- [x] Mode-aware deployment tooling (env-init, preflight, unified `make up/down`)
+- [x] Single-container deployment (WireGuard + Unbound + Gateway)
+- [x] MITM detection — 3-stage TLS validation, two-tier proxy pool
+- [x] API bound to WireGuard interface (`10.13.13.1`)
 - [ ] IPv6 SO_ORIGINAL_DST support (`sockaddr_in6` in `transparent.rs`)
-- [ ] DDNS integration for WAN configs (alternative to UPnP external IP)
-- [ ] API authentication (currently relies on WireGuard-only network access)
 - [ ] `preferred_countries` implementation (only `exclude_countries` is done)
 
 ### Technical Debt
 - [x] Config watcher proper lifetime management (replace 60s sleep loop in `config.rs`)
-- [x] Python path traversal sanitization in `web_server.py` (net-manager)
 - [x] Hardcoded DNS upstream `10.13.13.1:53` in `udp.rs` (move to config)
+- [x] Removed broken multi-container architecture
 
 ### Enhancements
 - [x] Geo-index for O(1) country-based proxy selection (`HashMap<country, Vec<proxy_key>>` in `state.rs`)
 - [x] GeoIP lookup cache (`DashMap` in `geo_ip.rs`) to eliminate redundant API requests
 - [x] Prometheus typed metrics — add `# TYPE` / `# HELP` headers to `/metrics` output in `metrics.rs`
+- [x] Expanded proxy sources from 11 to 27
 
 ---
 

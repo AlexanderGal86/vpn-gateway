@@ -98,6 +98,7 @@ async fn handle_connection(mut client: TcpStream, peer: SocketAddr, state: Share
         .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
     let max_retries = 3;
+    let is_https = target_port == 443;
 
     // Check for sticky session first
     let mut selected_proxy_key: Option<String> = None;
@@ -105,8 +106,17 @@ async fn handle_connection(mut client: TcpStream, peer: SocketAddr, state: Share
     // Try sticky session on first attempt
     if let Some(sticky_key) = state.sticky_sessions.get(&peer) {
         if state.proxies.contains_key(&sticky_key) {
-            tracing::debug!("Using sticky session: {} -> {}", peer, sticky_key);
-            selected_proxy_key = Some(sticky_key);
+            // For HTTPS: only use sticky proxy if it's TLS-clean
+            let tls_ok = !is_https
+                || state
+                    .proxies
+                    .get(&sticky_key)
+                    .map(|p| p.tls_clean == Some(true))
+                    .unwrap_or(false);
+            if tls_ok {
+                tracing::debug!("Using sticky session: {} -> {}", peer, sticky_key);
+                selected_proxy_key = Some(sticky_key);
+            }
         }
     }
 
@@ -119,6 +129,8 @@ async fn handle_connection(mut client: TcpStream, peer: SocketAddr, state: Share
         // Get proxy - either sticky or fresh selection
         let proxy = if let Some(ref key) = selected_proxy_key {
             state.proxies.get(key).map(|p| p.value().clone())
+        } else if is_https {
+            state.select_best_for_tls()
         } else {
             state.select_best()
         };
