@@ -481,9 +481,13 @@ All 5 stages implemented and verified:
 - [x] Benchmarks: `cargo bench` for `collect_top_n()`, EWMA scoring, and hot paths
 
 #### Features
+- [x] Country exclusion filter (`exclude_countries` in config + `select_best()` filtering)
+- [x] VPS Simple Mode (single-container deployment with WireGuard + Unbound + Gateway)
+- [x] Mode-aware deployment tooling (env-init, preflight, unified `make up/down`)
 - [ ] IPv6 SO_ORIGINAL_DST support (`sockaddr_in6` in `transparent.rs`)
 - [ ] DDNS integration for WAN configs (alternative to UPnP external IP)
 - [ ] API authentication (currently relies on WireGuard-only network access)
+- [ ] `preferred_countries` implementation (only `exclude_countries` is done)
 
 #### Technical Debt
 - [x] Config watcher proper lifetime management (replace 60s sleep loop in `config.rs`)
