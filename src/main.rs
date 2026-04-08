@@ -45,6 +45,7 @@ async fn main() -> anyhow::Result<()> {
         config.geoip_path.clone(),
         config.sticky_session_ttl,
         config.max_proxies,
+        config.exclude_countries.clone(),
     );
 
     // Load GeoIP if configured
@@ -197,6 +198,10 @@ async fn main() -> anyhow::Result<()> {
             reload_state
                 .sticky_sessions
                 .set_ttl(new_config.sticky_session_ttl);
+            // Update excluded countries
+            if let Ok(mut excluded) = reload_state.exclude_countries.write() {
+                *excluded = new_config.exclude_countries;
+            }
         }
     }));
 

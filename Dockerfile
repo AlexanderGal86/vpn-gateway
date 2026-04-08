@@ -24,7 +24,10 @@ FROM debian:bookworm-slim
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     iptables \
+    iproute2 \
     wireguard-tools \
+    unbound \
+    qrencode \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -33,11 +36,12 @@ RUN mkdir -p /app/data /app/config
 COPY --from=builder /app/target/release/vpn-gateway /usr/local/bin/vpn-gateway
 COPY scripts/entrypoint.sh /entrypoint.sh
 COPY scripts/entrypoint-local.sh /entrypoint-local.sh
+COPY scripts/entrypoint-simple.sh /entrypoint-simple.sh
 COPY scripts/debug-entrypoint.sh /debug-entrypoint.sh
 COPY scripts/run-gateway.sh /run-gateway.sh
 COPY config/ /app/config/
 
-RUN chmod +x /entrypoint.sh /entrypoint-local.sh /run-gateway.sh
+RUN chmod +x /entrypoint.sh /entrypoint-local.sh /entrypoint-simple.sh /run-gateway.sh
 
 # Default: use local entrypoint (no WireGuard)
 ENV GATEWAY_MODE=local

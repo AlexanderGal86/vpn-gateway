@@ -8,8 +8,12 @@
 /data/GeoLite2-*.mmdb
 /data/dbip-*.mmdb
 /data/*.key
-/data/wg/peer*/
-/data/wg/server/
+# WireGuard keys (private!)
+/data/wg/peer*.key
+/data/wg/peer*.pub
+/data/wg/server.key
+/data/wg/server.pub
+/data/wg/wg_confs/
 /data/wg/wg_confs/
 /data/wg/.donoteditthisfile
 /data/wg/coredns/
@@ -22,6 +26,7 @@
 config/unbound/unbound.pid
 config/unbound/dev/
 config/unbound/var/
+data/unbound/
 
 # Logs
 *.log
