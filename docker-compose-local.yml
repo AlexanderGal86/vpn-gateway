@@ -1,5 +1,7 @@
-version: "3.9"
-
+# VM behind NAT (home/office LAN):
+# - keeps WireGuard + gateway + DNS in one network namespace
+# - adds net-manager sidecar for UPnP and peer config publishing
+# - ext_net (macvlan) gives net-manager a LAN-visible identity for router discovery
 services:
   wireguard:
     image: lscr.io/linuxserver/wireguard:latest
@@ -11,35 +13,37 @@ services:
       - PUID=1000
       - PGID=1000
       - TZ=Etc/UTC
-      - SERVERURL=auto
-      - SERVERPORT=51820
-      - PEERS=1
+      - SERVERURL=${WG_SERVER_URL:-auto}
+      - SERVERPORT=${WG_PORT:-51820}
+      - PEERS=${WG_PEERS:-2}
       - PEERDNS=10.13.13.1
       - INTERNAL_SUBNET=10.13.13.0/24
       - ALLOWEDIPS=0.0.0.0/0
     volumes:
       - ./data/wg:/config
     ports:
-      - "51820:51820/udp"
+      - "${WG_PORT:-51820}:${WG_PORT:-51820}/udp"
+      - "${API_PORT:-8080}:8080/tcp"
     sysctls:
       - net.ipv4.conf.all.src_valid_mark=1
+    networks:
+      vpn-internal:
+        ipv4_address: 172.20.0.10
     restart: unless-stopped
 
   vpn-gateway:
     build: .
     container_name: vpn-gateway
+    network_mode: service:wireguard
     cap_add:
       - NET_ADMIN
       - SYS_MODULE
+    entrypoint: ["/entrypoint.sh"]
     depends_on:
       - wireguard
     volumes:
       - ./data:/app/data
       - ./config:/app/config:ro
-    ports:
-      - "1080:1080/tcp"
-      - "1081:1081/udp"
-      - "8080:8080/tcp"
     environment:
       - RUST_LOG=vpn_gateway=info
     ulimits:
@@ -49,10 +53,51 @@ services:
   unbound:
     image: mvance/unbound:latest
     container_name: unbound
-    cap_add:
-      - NET_ADMIN
+    network_mode: service:wireguard
+    depends_on:
+      - wireguard
     volumes:
       - ./config/unbound:/opt/unbound/etc/unbound
-    ports:
-      - "5353:5353/udp"
     restart: unless-stopped
+
+  net-manager:
+    build: ./services/net-manager
+    container_name: net-manager
+    cap_add:
+      - NET_ADMIN
+    networks:
+      vpn-internal:
+      ext_net:
+    volumes:
+      - ./data/wg:/wg-config:ro
+      - ./data/clients:/clients
+    environment:
+      - DOCKER_HOST_IP=${DOCKER_HOST_IP:-}
+      - WG_PORT=${WG_PORT:-51820}
+      - CONFIG_SERVER_PORT=8088
+      - UPNP_LEASE_DURATION=3600
+      - POLL_INTERVAL=30
+      - WG_CONFIG_DIR=/wg-config
+      - OUTPUT_DIR=/clients
+    ports:
+      - "8088:8088"
+    depends_on:
+      - wireguard
+    restart: unless-stopped
+
+networks:
+  vpn-internal:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/24
+
+  ext_net:
+    driver: macvlan
+    driver_opts:
+      parent: ${NET_INTERFACE:-eth0}
+    ipam:
+      config:
+        - subnet: ${LAN_SUBNET:-192.168.1.0/24}
+          gateway: ${LAN_GATEWAY:-192.168.1.1}
+          ip_range: ${MACVLAN_IP_RANGE:-192.168.1.200/29}

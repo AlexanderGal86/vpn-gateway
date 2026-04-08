@@ -1,0 +1,10 @@
+{
+  "gateway_port": 1080,
+  "api_port": 8080,
+  "udp_port": 1081,
+  "max_proxies": 5000,
+  "max_connections": 10000,
+  "health_check_interval": 30,
+  "source_update_interval": 300,
+  "exclude_countries": ["RU"]
+}

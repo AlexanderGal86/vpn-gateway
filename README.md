@@ -4,6 +4,32 @@ Transparent TCP/UDP proxy gateway with a dynamic pool of free proxy servers, Wir
 
 ## Overview
 
+## Operational docs
+
+- Full operations manual (RU): `docs/OPERATIONS_MANUAL.ru.md`
+- Architecture rethink (RU): `docs/ARCHITECTURE_RETHINK.ru.md`
+
+## Current deployment modes (actual)
+
+Use unified mode-aware commands:
+
+```bash
+make env-init MODE=vps|home-vm|home-desktop
+make up MODE=vps|home-vm|home-desktop
+make status-all MODE=vps|home-vm|home-desktop
+make down MODE=vps|home-vm|home-desktop
+```
+
+Mode mapping:
+- `vps` → `docker-compose.yml`
+- `home-vm` → `docker-compose-local.yml` (net-manager + macvlan)
+- `home-desktop` → `docker-compose-local.yml` + `docker-compose-dev.yml`
+
+CI note:
+- `.github/workflows/ci-mode-tests.yml` runs `make test` and `./scripts/test-mode-automation.sh`.
+
+---
+
 VPN Gateway automatically discovers, validates, and rotates through 1000+ free proxy servers from public lists. TCP traffic from WireGuard clients is transparently proxied through the best-performing servers, selected via EWMA latency scoring and circuit breaker patterns. UDP traffic (including DNS) is relayed through a dedicated channel with Unbound DNS resolver for leak prevention.
 
 ### Key Features
@@ -238,14 +264,14 @@ WG_PEERS=2
 ### 2. Deploy
 
 ```bash
-# Production (VPS with UPnP + macvlan)
-make docker-full-up
+# VPS/public IP
+make up MODE=vps
 
-# Local development (no macvlan)
-make docker-dev-up
+# Home Linux VM behind NAT (with net-manager + macvlan)
+make up MODE=home-vm
 
-# Minimal (local network, no net-manager)
-make docker-local-up
+# Docker Desktop (macvlan override)
+make up MODE=home-desktop
 ```
 
 ### 3. Connect WireGuard clients
@@ -301,12 +327,13 @@ CONFIG_PATH=path/to/custom.json cargo run
 
 ### Docker Deployment Modes
 
-| Mode | Command | Use Case |
-|------|---------|----------|
-| **Full** | `make docker-full-up` | Production VPS with UPnP + macvlan |
-| **Dev** | `make docker-dev-up` | Development without macvlan |
-| **Local** | `make docker-local-up` | Local network, no net-manager |
-| **VPS** | `make docker-up` | Basic VPS deployment |
+| Mode | Unified command | Compose files | Use case |
+|------|------------------|---------------|----------|
+| **VPS** | `make up MODE=vps` | `docker-compose.yml` | Public VPS/host with explicit `WG_SERVER_URL` |
+| **Home VM (NAT)** | `make up MODE=home-vm` | `docker-compose-local.yml` | Home Linux VM behind router NAT, with `net-manager` + macvlan |
+| **Home Desktop** | `make up MODE=home-desktop` | `docker-compose-local.yml` + `docker-compose-dev.yml` | Docker Desktop development without macvlan |
+
+Legacy aliases are still available: `make docker-up`, `make docker-local-up`, `make docker-dev-up`, `make docker-full-up`.
 
 ### Configuration
 
@@ -556,7 +583,7 @@ Located in `services/net-manager/`, this service handles network configuration:
 6. Serves configs via HTTP on port 8088
 7. Monitors for IP changes every 30 seconds, regenerates configs on change
 
-> **Note**: macvlan doesn't work on Docker Desktop (Windows/Mac). Use `make docker-dev-up` which replaces macvlan with host networking.
+> **Note**: macvlan doesn't work on Docker Desktop (Windows/Mac). Use `make docker-dev-up` which keeps `net-manager` on bridge networking (no macvlan).
 
 ---
 
@@ -615,15 +642,19 @@ make fmt                # Check formatting
 make fmt-fix            # Auto-fix formatting
 make check              # lint + fmt + test
 
-# Docker
-make docker-up          # VPS mode
-make docker-down        # Stop VPS
-make docker-local-up    # Local network mode
-make docker-local-down  # Stop local
-make docker-full-up     # Full stack (VPS + net-manager + UPnP)
-make docker-full-down   # Stop full stack
-make docker-dev-up      # Dev mode (no macvlan)
-make docker-dev-down    # Stop dev
+# Docker (unified mode-first)
+make up MODE=vps
+make down MODE=vps
+make up MODE=home-vm
+make down MODE=home-vm
+make up MODE=home-desktop
+make down MODE=home-desktop
+
+# Legacy aliases (still supported)
+make docker-up          # alias for VPS startup
+make docker-local-up    # alias for home-vm startup
+make docker-dev-up      # alias for home-desktop startup
+make docker-full-up     # alias for docker-local-up
 make docker-logs        # Follow logs
 
 # Utilities

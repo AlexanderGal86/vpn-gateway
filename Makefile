@@ -1,4 +1,4 @@
-.PHONY: help build test run clean lint fmt fmt-fix check bench geoip-update geoip-update-dbip docker-up docker-down docker-logs docker-local-up docker-local-down docker-full-up docker-full-down docker-dev-up docker-dev-down status backup update client shell test-connection wg-keygen wg-show-configs
+.PHONY: help build test run clean lint fmt fmt-fix check bench geoip-update geoip-update-dbip docker-up docker-down docker-logs docker-local-up docker-local-down docker-full-up docker-full-down docker-dev-up docker-dev-down status backup update client shell test-connection wg-keygen wg-show-configs env-init preflight up down status-all test-modes
 
 help:
 	@echo "VPN Gateway Makefile"
@@ -17,13 +17,20 @@ help:
 	@echo "Docker targets:"
 	@echo "  docker-up          - Start Docker containers (VPS mode)"
 	@echo "  docker-down        - Stop Docker containers (VPS mode)"
-	@echo "  docker-local-up    - Start Docker containers (Local network mode)"
-	@echo "  docker-local-down  - Stop Docker containers (Local network mode)"
-	@echo "  docker-full-up     - Start full stack (VPS + net-manager + UPnP)"
-	@echo "  docker-full-down   - Stop full stack"
-	@echo "  docker-dev-up      - Start full stack (dev mode, no macvlan)"
+	@echo "  docker-local-up    - Start Docker containers (VM behind NAT mode)"
+	@echo "  docker-local-down  - Stop Docker containers (VM behind NAT mode)"
+	@echo "  docker-full-up     - Alias: start VM behind NAT stack (with net-manager + UPnP)"
+	@echo "  docker-full-down   - Alias: stop VM behind NAT stack"
+	@echo "  docker-dev-up      - Start VM behind NAT stack with Docker Desktop override"
 	@echo "  docker-dev-down    - Stop dev stack"
 	@echo "  docker-logs        - Show Docker logs"
+	@echo ""
+	@echo "  env-init           - Initialize/update .env for MODE (vps|home-vm|home-desktop)"
+	@echo "  preflight          - Validate env/network/compose for MODE"
+	@echo "  up                 - Unified startup for MODE"
+	@echo "  down               - Unified shutdown for MODE"
+	@echo "  status-all         - Health + metrics (+net-manager for home modes)"
+	@echo "  test-modes         - Run mode automation checks (env-init/preflight)"
 	@echo ""
 	@echo "Utility targets:"
 	@echo "  status             - Show container status and proxy count"
@@ -105,29 +112,24 @@ geoip-update-dbip:
 	fi
 
 docker-up:
-	docker compose up -d --build
+	docker compose -f docker-compose.yml up -d --build
 	@echo "Waiting for services..."
 	@sleep 5
-	@docker compose logs -f
+	@echo "=== Service Status (VPS mode) ==="
+	@docker compose -f docker-compose.yml ps
+	@echo ""
+	@echo "=== Gateway Health ==="
+	@curl -s http://localhost:8080/health 2>/dev/null || echo "Gateway API not yet ready"
 
 docker-down:
-	docker compose down
+	docker compose -f docker-compose.yml down
 
 docker-local-up:
 	docker compose -f docker-compose-local.yml up -d --build
 	@echo "Waiting for services..."
 	@sleep 5
-	@docker compose -f docker-compose-local.yml logs -f
-
-docker-local-down:
-	docker compose -f docker-compose-local.yml down
-
-docker-full-up:
-	docker compose -f docker-compose.yml up -d --build
-	@echo "Waiting for services..."
-	@sleep 5
-	@echo "=== Service Status ==="
-	@docker compose ps
+	@echo "=== Service Status (VM behind NAT mode) ==="
+	@docker compose -f docker-compose-local.yml ps
 	@echo ""
 	@echo "=== net-manager Status ==="
 	@curl -s http://localhost:8088/status 2>/dev/null || echo "net-manager API not yet ready"
@@ -135,20 +137,70 @@ docker-full-up:
 	@echo "=== Gateway Health ==="
 	@curl -s http://localhost:8080/health 2>/dev/null || echo "Gateway API not yet ready"
 
+docker-local-down:
+	docker compose -f docker-compose-local.yml down
+
+docker-full-up:
+	@$(MAKE) docker-local-up
+
 docker-full-down:
-	docker compose -f docker-compose.yml down
+	docker compose -f docker-compose-local.yml down
 
 docker-dev-up:
-	docker compose -f docker-compose.yml -f docker-compose-dev.yml up -d --build
+	docker compose -f docker-compose-local.yml -f docker-compose-dev.yml up -d --build
 	@echo "Waiting for services..."
 	@sleep 5
-	@docker compose -f docker-compose.yml -f docker-compose-dev.yml ps
+	@docker compose -f docker-compose-local.yml -f docker-compose-dev.yml ps
 
 docker-dev-down:
-	docker compose -f docker-compose.yml -f docker-compose-dev.yml down
+	docker compose -f docker-compose-local.yml -f docker-compose-dev.yml down
 
 docker-logs:
 	docker compose logs -f
+
+# Unified mode commands (MODE=vps|home-vm|home-desktop)
+env-init:
+	@MODE=$${MODE:-home-vm} ./scripts/env-init.sh
+
+preflight:
+	@MODE=$${MODE:-home-vm} ./scripts/preflight.sh
+
+up: preflight
+	@if [ "$${MODE:-home-vm}" = "vps" ]; then \
+		$(MAKE) docker-up; \
+	elif [ "$${MODE:-home-vm}" = "home-vm" ]; then \
+		$(MAKE) docker-local-up; \
+	elif [ "$${MODE:-home-vm}" = "home-desktop" ]; then \
+		$(MAKE) docker-dev-up; \
+	else \
+		echo "Unknown MODE=$${MODE:-home-vm}. Use vps|home-vm|home-desktop"; exit 1; \
+	fi
+
+down:
+	@if [ "$${MODE:-home-vm}" = "vps" ]; then \
+		$(MAKE) docker-down; \
+	elif [ "$${MODE:-home-vm}" = "home-vm" ]; then \
+		$(MAKE) docker-local-down; \
+	elif [ "$${MODE:-home-vm}" = "home-desktop" ]; then \
+		$(MAKE) docker-dev-down; \
+	else \
+		echo "Unknown MODE=$${MODE:-home-vm}. Use vps|home-vm|home-desktop"; exit 1; \
+	fi
+
+status-all:
+	@echo "=== Gateway Health ==="
+	@curl -s http://localhost:8080/health 2>/dev/null || echo "Gateway API unavailable"
+	@echo ""
+	@echo "=== Proxy Metrics ==="
+	@curl -s http://localhost:8080/api/metrics 2>/dev/null || echo "Metrics unavailable"
+	@if [ "$${MODE:-home-vm}" != "vps" ]; then \
+		echo ""; \
+		echo "=== net-manager Status ==="; \
+		curl -s http://localhost:8088/status 2>/dev/null || echo "net-manager unavailable"; \
+	fi
+
+test-modes:
+	@./scripts/test-mode-automation.sh
 
 status:
 	docker compose ps

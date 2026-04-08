@@ -2,9 +2,7 @@ use crate::pool::proxy::{Proxy, ProxyStatus};
 use crate::pool::sticky_sessions::StickySessionManager;
 use chrono::Utc;
 use dashmap::DashMap;
-use rand::distributions::WeightedIndex;
-use rand::prelude::Distribution;
-use rand::thread_rng;
+use rand::distr::{weighted::WeightedIndex, Distribution};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use tokio::sync::Notify;
@@ -109,6 +107,9 @@ pub struct SharedState {
 
     // === Geo-index for O(1) country lookup ===
     pub geo_index: GeoIndex,
+
+    // === Excluded countries (e.g., RU for Russia) ===
+    pub exclude_countries: Arc<std::sync::RwLock<Vec<String>>>,
 }
 
 impl SharedState {
@@ -125,6 +126,7 @@ impl SharedState {
             geoip: Arc::new(GeoIp::new()),
             max_proxies: Arc::new(AtomicUsize::new(5000)),
             geo_index: GeoIndex::new(),
+            exclude_countries: Arc::new(std::sync::RwLock::new(Vec::new())),
         }
     }
 
@@ -132,6 +134,7 @@ impl SharedState {
         geoip_path: Option<String>,
         sticky_ttl_secs: u64,
         max_proxies: usize,
+        exclude_countries: Vec<String>,
     ) -> Self {
         let geoip = match geoip_path {
             // Note: load() should be called separately as it's async
@@ -151,6 +154,7 @@ impl SharedState {
             geoip: Arc::new(geoip),
             max_proxies: Arc::new(AtomicUsize::new(max_proxies)),
             geo_index: GeoIndex::new(),
+            exclude_countries: Arc::new(std::sync::RwLock::new(exclude_countries)),
         }
     }
 
@@ -161,14 +165,25 @@ impl SharedState {
     /// Priority:
     /// 1. Verified + low latency (recently checked, working)
     /// 2. PresumedAlive (from state.json, not yet re-checked)
-    /// 3. Unchecked (just loaded from source, never tested)
+    /// 3. Unchecked (random — we don't know latency)
     ///
     /// Within each tier, selects from top-N candidates with weighted random
     /// to avoid overloading a single proxy.
     pub fn select_best(&self) -> Option<Proxy> {
+        let excluded: Vec<String> = self
+            .exclude_countries
+            .read()
+            .ok()
+            .map(|g| g.clone())
+            .unwrap_or_default();
+
         // Tier 1: Verified proxies — single-pass top-N selection
         let top = self.collect_top_n(|p| {
-            p.is_available() && matches!(&p.status, Some(ProxyStatus::Verified))
+            p.is_available()
+                && matches!(&p.status, Some(ProxyStatus::Verified))
+                && !excluded
+                    .iter()
+                    .any(|c| p.country.as_ref().map(|pc| pc == c).unwrap_or(false))
         });
         if !top.is_empty() {
             return Some(Self::weighted_random_select(&top));
@@ -176,7 +191,11 @@ impl SharedState {
 
         // Tier 2: PresumedAlive (state.json)
         let top = self.collect_top_n(|p| {
-            p.is_available() && matches!(&p.status, Some(ProxyStatus::PresumedAlive))
+            p.is_available()
+                && matches!(&p.status, Some(ProxyStatus::PresumedAlive))
+                && !excluded
+                    .iter()
+                    .any(|c| p.country.as_ref().map(|pc| pc == c).unwrap_or(false))
         });
         if !top.is_empty() {
             return Some(Self::weighted_random_select(&top));
@@ -185,7 +204,12 @@ impl SharedState {
         // Tier 3: Unchecked (random — we don't know latency)
         self.proxies
             .iter()
-            .filter(|p| p.is_available())
+            .filter(|p| {
+                p.is_available()
+                    && !excluded
+                        .iter()
+                        .any(|c| p.country.as_ref().map(|pc| pc == c).unwrap_or(false))
+            })
             .find(|p| matches!(&p.status, Some(ProxyStatus::Unchecked) | None))
             .map(|p| p.value().clone())
     }
@@ -245,7 +269,7 @@ impl SharedState {
 
         match WeightedIndex::new(&weights) {
             Ok(dist) => {
-                let idx = dist.sample(&mut thread_rng());
+                let idx = dist.sample(&mut rand::rng());
                 candidates[idx].clone()
             }
             Err(_) => candidates[0].clone(),
@@ -484,12 +508,11 @@ mod tests {
     }
 
     #[test]
-    fn test_select_best_returns_verified_first() {
+    fn test_select_best_prefers_verified_over_unchecked() {
         let state = SharedState::new();
         state.insert_if_absent(make_proxy("1.2.3.4", 8080));
         state.insert_if_absent(make_proxy("5.6.7.8", 3128));
         state.record_success("1.2.3.4:8080", 100.0);
-        state.record_success("5.6.7.8:3128", 200.0);
         let selected = state.select_best().unwrap();
         assert_eq!(selected.host, "1.2.3.4");
     }

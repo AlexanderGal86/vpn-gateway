@@ -32,6 +32,9 @@ pub struct Config {
     pub preferred_countries: Vec<String>,
 
     #[serde(default)]
+    pub exclude_countries: Vec<String>,
+
+    #[serde(default)]
     pub geoip_path: Option<String>,
 
     #[serde(default = "default_state_path")]
@@ -110,6 +113,7 @@ impl Default for Config {
             health_check_interval: default_health_check_interval(),
             source_update_interval: default_source_update_interval(),
             preferred_countries: Vec::new(),
+            exclude_countries: Vec::new(),
             geoip_path: None,
             state_path: default_state_path(),
             sources_path: default_sources_path(),
