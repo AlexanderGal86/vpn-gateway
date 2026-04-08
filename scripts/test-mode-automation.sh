@@ -29,24 +29,10 @@ if ! command -v docker >/dev/null 2>&1; then
   exit 0
 fi
 
-if ! command -v ip >/dev/null 2>&1; then
-  echo "[WARN] ip command is not available; skipping runtime mode automation checks"
-  exit 0
-fi
+./scripts/env-init.sh
+./scripts/preflight.sh
 
-MODE=vps ./scripts/env-init.sh
-MODE=vps ./scripts/preflight.sh
-
-MODE=home-vm ./scripts/env-init.sh
-MODE=home-vm ./scripts/preflight.sh
-
-MODE=home-desktop ./scripts/env-init.sh
-MODE=home-desktop ./scripts/preflight.sh
-
-make -n up MODE=vps >/dev/null
-make -n up MODE=home-vm >/dev/null
-make -n up MODE=home-desktop >/dev/null
-make -n down MODE=vps >/dev/null
-make -n status-all MODE=home-desktop >/dev/null
+make -n docker-up >/dev/null
+make -n docker-down >/dev/null
 
 echo "Mode automation checks passed"

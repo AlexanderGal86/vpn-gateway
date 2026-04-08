@@ -1,54 +1,24 @@
-services:
-  wireguard:
-    image: lscr.io/linuxserver/wireguard:latest
-    container_name: wireguard
-    cap_add:
-      - NET_ADMIN
-      - SYS_MODULE
-    environment:
-      - PUID=1000
-      - PGID=1000
-      - TZ=Etc/UTC
-      - SERVERURL=${WG_SERVER_URL:-auto}
-      - SERVERPORT=${WG_PORT:-51820}
-      - PEERS=${WG_PEERS:-2}
-      - PEERDNS=10.13.13.1
-      - INTERNAL_SUBNET=10.13.13.0/24
-      - ALLOWEDIPS=0.0.0.0/0
-    volumes:
-      - ./data/wg:/config
-    ports:
-      - "${WG_PORT:-51820}:${WG_PORT:-51820}/udp"
-      - "${API_PORT:-8080}:8080/tcp"
-    sysctls:
-      - net.ipv4.conf.all.src_valid_mark=1
-    restart: unless-stopped
+# VPN Gateway — single container
+# WireGuard + Unbound DNS + VPN Gateway + iptables
+# network_mode: host for direct network access
 
+services:
   vpn-gateway:
     build: .
     container_name: vpn-gateway
-    network_mode: service:wireguard
+    network_mode: host
     cap_add:
       - NET_ADMIN
       - SYS_MODULE
-    entrypoint: ["/entrypoint.sh"]
-    depends_on:
-      - wireguard
+    entrypoint: ["/entrypoint-simple.sh"]
     volumes:
       - ./data:/app/data
       - ./config:/app/config:ro
     environment:
-      - RUST_LOG=vpn_gateway=info
+      - RUST_LOG=${LOG_LEVEL:-info}
+      - WG_SERVER_URL=${WG_SERVER_URL:-auto}
+      - WG_PORT=${WG_PORT:-51820}
+      - WG_PEERS=${WG_PEERS:-2}
     ulimits:
       nofile: 1048576
-    restart: unless-stopped
-
-  unbound:
-    image: mvance/unbound:latest
-    container_name: unbound
-    network_mode: service:wireguard
-    depends_on:
-      - wireguard
-    volumes:
-      - ./config/unbound:/opt/unbound/etc/unbound
     restart: unless-stopped

@@ -57,37 +57,37 @@ bench:
 check: lint fmt test
 
 docker-up:
-	docker compose -f docker-compose-vps-simple.yml up -d --build
+	docker compose up -d --build
 	@echo "Waiting for services..."
 	@sleep 5
 	@echo "=== Service Status ==="
-	@docker compose -f docker-compose-vps-simple.yml ps
+	@docker compose ps
 
 docker-down:
-	docker compose -f docker-compose-vps-simple.yml down
+	docker compose down
 
 docker-logs:
-	docker compose -f docker-compose-vps-simple.yml logs -f
+	docker compose logs -f
 
 status:
-	docker compose -f docker-compose-vps-simple.yml ps
+	docker compose ps
 	@echo ""
 	@echo "Proxy count:"
-	@curl -s http://localhost:8080/api/metrics 2>/dev/null | python3 -c "import sys,json; print(json.load(sys.stdin).get('total_proxies','N/A'))" 2>/dev/null || echo "API unavailable"
+	@curl -s http://10.13.13.1:8080/api/metrics 2>/dev/null | python3 -c "import sys,json; print(json.load(sys.stdin).get('total_proxies','N/A'))" 2>/dev/null || echo "API unavailable"
 
 backup:
 	@bash scripts/backup.sh
 
 update:
 	git pull 2>/dev/null || true
-	docker compose -f docker-compose-vps-simple.yml pull
-	docker compose -f docker-compose-vps-simple.yml up -d --build
+	docker compose pull
+	docker compose up -d --build
 
 client:
 	@bash scripts/client-setup.sh
 
 shell:
-	docker compose -f docker-compose-vps-simple.yml exec vpn-gateway sh
+	docker compose exec vpn-gateway sh
 
 test-connection:
 	@echo "Testing connection through proxy..."
