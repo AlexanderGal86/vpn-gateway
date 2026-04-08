@@ -4,7 +4,7 @@
 - **Core Functionality**: Implemented, tested, Docker-deployed
 - **Build Status**: Clean compile, 0 clippy warnings
 - **Runtime**: Proxy :1080, UDP :1081, API :8080, net-manager :8088
-- **Tests**: 85/85 passing
+- **Tests**: 114 passing
 - **Lines of Code**: ~2200 Rust + ~600 Python
 - **Language**: Rust (Edition 2021), Tokio async runtime
 
@@ -400,9 +400,13 @@ Lazy lookup: GeoIP resolved asynchronously when proxy passes health check. Bound
 - [x] Benchmarks: `cargo bench` for `collect_top_n()`, EWMA scoring, and hot paths
 
 ### Features
+- [x] Country exclusion filter (`exclude_countries` in config + `select_best()` filtering)
+- [x] VPS Simple Mode (single-container deployment with WireGuard + Unbound + Gateway)
+- [x] Mode-aware deployment tooling (env-init, preflight, unified `make up/down`)
 - [ ] IPv6 SO_ORIGINAL_DST support (`sockaddr_in6` in `transparent.rs`)
 - [ ] DDNS integration for WAN configs (alternative to UPnP external IP)
 - [ ] API authentication (currently relies on WireGuard-only network access)
+- [ ] `preferred_countries` implementation (only `exclude_countries` is done)
 
 ### Technical Debt
 - [x] Config watcher proper lifetime management (replace 60s sleep loop in `config.rs`)
