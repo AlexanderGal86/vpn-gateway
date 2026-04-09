@@ -268,7 +268,7 @@ button.secondary:hover { background: var(--border); color: var(--text); }
 /* Peer cards */
 .peer-cards {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
   gap: 16px;
 }
 .peer-card {
@@ -277,9 +277,15 @@ button.secondary:hover { background: var(--border); color: var(--text); }
   border-radius: var(--radius);
   padding: 16px;
 }
-.peer-card .peer-name { font-weight: 600; margin-bottom: 8px; }
+.peer-card .peer-name { font-weight: 600; margin-bottom: 8px; font-size: 15px; }
 .peer-card .peer-detail { font-size: 12px; color: var(--text2); margin-bottom: 4px; }
 .peer-card .peer-detail span { color: var(--text); font-family: monospace; }
+.peer-card .peer-actions { margin-top: 12px; display: flex; gap: 8px; flex-wrap: wrap; }
+.peer-card .peer-actions a, .peer-card .peer-actions button {
+  font-size: 12px; padding: 5px 12px; text-decoration: none;
+}
+.peer-qr { margin-top: 12px; text-align: center; }
+.peer-qr img { max-width: 200px; border-radius: var(--radius); border: 1px solid var(--border); }
 
 /* Loading */
 .loading { text-align: center; padding: 40px; color: var(--text2); }
@@ -452,7 +458,7 @@ button.secondary:hover { background: var(--border); color: var(--text); }
   <div class="panel" id="panel-wireguard">
     <div class="section">
       <div class="section-desc">
-        WireGuard peers configured on the server. Configs are in <code>data/wg/</code>.
+        WireGuard peers configured on the server. Download config files or scan QR codes on mobile.
       </div>
     </div>
     <div class="peer-cards" id="peer-cards">
@@ -512,6 +518,16 @@ button.secondary:hover { background: var(--border); color: var(--text); }
         <span class="method get">GET</span>
         <span class="path">/api/wg/peers</span>
         <span class="desc">WireGuard peers: name, address, public key, config availability</span>
+      </div>
+      <div class="endpoint">
+        <span class="method get">GET</span>
+        <span class="path">/api/wg/peers/{name}/config</span>
+        <span class="desc">Download WireGuard peer config file (.conf)</span>
+      </div>
+      <div class="endpoint">
+        <span class="method get">GET</span>
+        <span class="path">/api/wg/peers/{name}/qr</span>
+        <span class="desc">Download WireGuard peer QR code (PNG image)</span>
       </div>
     </div>
   </div>
@@ -731,13 +747,23 @@ async function loadWireGuard() {
         <div class="peer-name">${p.name}</div>
         <div class="peer-detail">Address: <span>${p.address || '--'}</span></div>
         <div class="peer-detail">Public key: <span>${p.public_key ? p.public_key.slice(0, 20) + '...' : '--'}</span></div>
-        <div class="peer-detail">LAN config: <span>${p.has_lan_config ? 'Yes' : 'No'}</span></div>
-        <div class="peer-detail">WAN config: <span>${p.has_wan_config ? 'Yes' : 'No'}</span></div>
+        <div class="peer-actions">
+          <a href="${API_URL}/api/wg/peers/${p.name}/config" class="secondary" style="background:var(--surface2);border:1px solid var(--border);color:var(--text);border-radius:var(--radius);display:inline-block" download>Download .conf</a>
+          <button class="secondary" onclick="toggleQR('${p.name}')">Show QR</button>
+        </div>
+        <div class="peer-qr" id="qr-${p.name}" style="display:none">
+          <img src="${API_URL}/api/wg/peers/${p.name}/qr" alt="QR ${p.name}" onerror="this.parentElement.innerHTML='<span style=color:var(--text2)>QR not available</span>'">
+        </div>
       </div>
     `).join('');
   } catch (e) {
     document.getElementById('peer-cards').innerHTML = '<div class="loading">Failed to load: ' + e.message + '</div>';
   }
+}
+
+function toggleQR(name) {
+  const el = document.getElementById('qr-' + name);
+  el.style.display = el.style.display === 'none' ? 'block' : 'none';
 }
 
 // Refresh all

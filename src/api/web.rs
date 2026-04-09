@@ -3,6 +3,8 @@ use crate::pool::proxy::Protocol;
 use crate::pool::state::SharedState;
 use axum::{
     extract::{Path, State},
+    http::{header, StatusCode},
+    response::{Html, IntoResponse, Response},
     routing::{get, post},
     Json, Router,
 };
@@ -295,8 +297,64 @@ async fn read_peer_file(peer_dir: &std::path::Path, filename: &str) -> String {
         .to_string()
 }
 
+static DASHBOARD_HTML: &str = include_str!("../../dashboard/index.html");
+
+async fn dashboard() -> Html<&'static str> {
+    Html(DASHBOARD_HTML)
+}
+
+/// Validate peer name: alphanumeric, hyphens, underscores only (1-64 chars)
+fn is_safe_peer_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 64
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+}
+
+async fn peer_config(Path(name): Path<String>) -> Response {
+    if !is_safe_peer_name(&name) {
+        return (StatusCode::BAD_REQUEST, "Invalid peer name").into_response();
+    }
+
+    let conf_path = std::path::PathBuf::from(format!("data/wg/{}/{}.conf", name, name));
+    match tokio::fs::read_to_string(&conf_path).await {
+        Ok(content) => (
+            StatusCode::OK,
+            [
+                (header::CONTENT_TYPE, "text/plain; charset=utf-8"),
+                (
+                    header::CONTENT_DISPOSITION,
+                    &format!("attachment; filename=\"{}.conf\"", name),
+                ),
+            ],
+            content,
+        )
+            .into_response(),
+        Err(_) => (StatusCode::NOT_FOUND, "Config not found").into_response(),
+    }
+}
+
+async fn peer_qr(Path(name): Path<String>) -> Response {
+    if !is_safe_peer_name(&name) {
+        return (StatusCode::BAD_REQUEST, "Invalid peer name").into_response();
+    }
+
+    let qr_path = std::path::PathBuf::from(format!("data/wg/{}/{}-qr.png", name, name));
+    match tokio::fs::read(&qr_path).await {
+        Ok(bytes) => (
+            StatusCode::OK,
+            [(header::CONTENT_TYPE, "image/png")],
+            bytes,
+        )
+            .into_response(),
+        Err(_) => (StatusCode::NOT_FOUND, "QR code not found").into_response(),
+    }
+}
+
 pub fn create_router(state: SharedState) -> Router {
     Router::new()
+        .route("/", get(dashboard))
         .route("/health", get(health))
         .route("/api/metrics", get(metrics))
         .route("/metrics", get(prometheus_metrics))
@@ -306,6 +364,8 @@ pub fn create_router(state: SharedState) -> Router {
         .route("/api/proxy/unban/{proxy_key}", post(unban_proxy))
         .route("/api/network-status", get(network_status))
         .route("/api/wg/peers", get(list_wg_peers))
+        .route("/api/wg/peers/{name}/config", get(peer_config))
+        .route("/api/wg/peers/{name}/qr", get(peer_qr))
         .with_state(state)
 }
 
