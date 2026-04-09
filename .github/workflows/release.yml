@@ -42,6 +42,15 @@ jobs:
           cargo deb --no-build
           cp target/debian/*.deb dist/
 
+      # Build .rpm package
+      - name: Install cargo-generate-rpm
+        run: cargo install cargo-generate-rpm
+
+      - name: Build .rpm package
+        run: |
+          cargo generate-rpm
+          cp target/generate-rpm/*.rpm dist/
+
       # Docker image
       - uses: docker/login-action@v4
         with:
@@ -71,4 +80,5 @@ jobs:
           files: |
             dist/vpn-gateway-linux-x86_64
             dist/*.deb
+            dist/*.rpm
           generate_release_notes: true
