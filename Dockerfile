@@ -16,6 +16,7 @@ RUN rm -rf src
 
 COPY src ./src
 COPY benches ./benches
+COPY dashboard ./dashboard
 RUN cargo build --release
 
 # === RUNTIME STAGE ===
