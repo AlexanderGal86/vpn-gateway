@@ -342,12 +342,7 @@ async fn peer_qr(Path(name): Path<String>) -> Response {
 
     let qr_path = std::path::PathBuf::from(format!("data/wg/{}/{}-qr.png", name, name));
     match tokio::fs::read(&qr_path).await {
-        Ok(bytes) => (
-            StatusCode::OK,
-            [(header::CONTENT_TYPE, "image/png")],
-            bytes,
-        )
-            .into_response(),
+        Ok(bytes) => (StatusCode::OK, [(header::CONTENT_TYPE, "image/png")], bytes).into_response(),
         Err(_) => (StatusCode::NOT_FOUND, "QR code not found").into_response(),
     }
 }
