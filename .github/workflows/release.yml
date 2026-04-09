@@ -1,84 +1,70 @@
-name: Release
+name: Semantic Release
 
 on:
   push:
-    tags: ['v*']
+    branches:
+      - main
 
-env:
-  CARGO_TERM_COLOR: always
-  REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.repository }}
+permissions:
+  contents: write
 
 jobs:
-  build-and-release:
-    name: Build and Release
+  semantic-release:
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
-      packages: write
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
-      - uses: dtolnay/rust-toolchain@stable
-
-      - uses: Swatinem/rust-cache@v2
-
-      # Build release binary
-      - name: Build release binary
-        run: cargo build --release
-
-      - name: Package binary
+      - name: Get latest tag
+        id: latest_tag
         run: |
-          mkdir -p dist
-          cp target/release/vpn-gateway dist/vpn-gateway-linux-x86_64
-          chmod +x dist/vpn-gateway-linux-x86_64
+          LATEST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "v0.0.0")
+          echo "tag=$LATEST_TAG" >> $GITHUB_OUTPUT
 
-      # Build .deb package
-      - name: Install cargo-deb
-        run: cargo install cargo-deb
-
-      - name: Build .deb package
+      - name: Determine version bump
+        id: version
         run: |
-          cargo deb --no-build
-          cp target/debian/*.deb dist/
+          LATEST_TAG=${{ steps.latest_tag.outputs.tag }}
+          LATEST_VERSION=${LATEST_TAG#v}
+          
+          IFS='.' read -r MAJOR MINOR PATCH <<< "$LATEST_VERSION"
+          
+          COMMITS=$(git log $LATEST_TAG..HEAD --pretty=%B)
+          
+          if echo "$COMMITS" | grep -q "^BREAKING CHANGE"; then
+            MAJOR=$((MAJOR + 1))
+            MINOR=0
+            PATCH=0
+          elif echo "$COMMITS" | grep -q "^feat"; then
+            MINOR=$((MINOR + 1))
+            PATCH=0
+          elif echo "$COMMITS" | grep -q "^fix"; then
+            PATCH=$((PATCH + 1))
+          else
+            exit 0
+          fi
+          
+          NEW_VERSION="$MAJOR.$MINOR.$PATCH"
+          echo "version=$NEW_VERSION" >> $GITHUB_OUTPUT
+          echo "tag=v$NEW_VERSION" >> $GITHUB_OUTPUT
 
-      # Build .rpm package
-      - name: Install cargo-generate-rpm
-        run: cargo install cargo-generate-rpm
-
-      - name: Build .rpm package
+      - name: Update Cargo.toml
+        if: steps.version.outputs.version
         run: |
-          cargo generate-rpm
-          cp target/generate-rpm/*.rpm dist/
+          sed -i 's/^version = .*/version = "${{ steps.version.outputs.version }}"/' Cargo.toml
 
-      # Docker image
-      - uses: docker/login-action@v4
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Commit and push
+        if: steps.version.outputs.version
+        run: |
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git config --local user.name "github-actions[bot]"
+          git add Cargo.toml
+          git commit -m "chore(release): bump version to ${{ steps.version.outputs.version }}"
+          git push origin main
 
-      - uses: docker/metadata-action@v6
-        id: meta
-        with:
-          images: ghcr.io/${{ github.repository }}
-          tags: |
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=raw,value=latest
-
-      - uses: docker/build-push-action@v7
-        with:
-          context: .
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-
-      # GitHub Release
-      - uses: softprops/action-gh-release@v2
-        with:
-          files: |
-            dist/vpn-gateway-linux-x86_64
-            dist/*.deb
-            dist/*.rpm
-          generate_release_notes: true
+      - name: Create tag and release
+        if: steps.version.outputs.version
+        run: |
+          git tag ${{ steps.version.outputs.tag }}
+          git push origin ${{ steps.version.outputs.tag }}
