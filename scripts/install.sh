@@ -94,8 +94,21 @@ install_docker() {
 
 install_native() {
     echo ""
-    echo "[*] Installing via .deb package..."
+    echo "[*] Installing native package..."
     echo ""
+
+    # Detect package manager
+    if command -v dpkg &> /dev/null; then
+        PKG_TYPE="deb"
+    elif command -v rpm &> /dev/null; then
+        PKG_TYPE="rpm"
+    else
+        echo "ERROR: Neither dpkg nor rpm found."
+        echo "Use Docker installation instead (option 1)."
+        exit 1
+    fi
+
+    echo "[*] Detected package type: $PKG_TYPE"
 
     # Detect latest release
     echo "[*] Fetching latest release..."
@@ -109,25 +122,34 @@ install_native() {
 
     echo "[*] Latest version: $LATEST"
 
-    # Download .deb package
-    DEB_NAME="vpn-gateway_${LATEST#v}_${ARCH_SUFFIX}.deb"
-    DEB_URL="$GITHUB_URL/releases/download/$LATEST/$DEB_NAME"
+    # Download and install package
+    if [ "$PKG_TYPE" = "deb" ]; then
+        PKG_NAME="vpn-gateway_${LATEST#v}_${ARCH_SUFFIX}.deb"
+        PKG_URL="$GITHUB_URL/releases/download/$LATEST/$PKG_NAME"
+        TMP_PKG=$(mktemp /tmp/vpn-gateway-XXXXXX.deb)
+    else
+        PKG_NAME="vpn-gateway-${LATEST#v}-1.x86_64.rpm"
+        PKG_URL="$GITHUB_URL/releases/download/$LATEST/$PKG_NAME"
+        TMP_PKG=$(mktemp /tmp/vpn-gateway-XXXXXX.rpm)
+    fi
 
-    echo "[*] Downloading $DEB_NAME..."
-    TMP_DEB=$(mktemp /tmp/vpn-gateway-XXXXXX.deb)
-    if ! curl -fsSL "$DEB_URL" -o "$TMP_DEB"; then
-        echo "ERROR: Failed to download .deb package from:"
-        echo "  $DEB_URL"
+    echo "[*] Downloading $PKG_NAME..."
+    if ! curl -fsSL "$PKG_URL" -o "$TMP_PKG"; then
+        echo "ERROR: Failed to download package from:"
+        echo "  $PKG_URL"
         echo ""
         echo "Available releases: $GITHUB_URL/releases"
-        rm -f "$TMP_DEB"
+        rm -f "$TMP_PKG"
         exit 1
     fi
 
-    # Install
     echo "[*] Installing package..."
-    dpkg -i "$TMP_DEB" || apt-get install -f -y
-    rm -f "$TMP_DEB"
+    if [ "$PKG_TYPE" = "deb" ]; then
+        dpkg -i "$TMP_PKG" || apt-get install -f -y
+    else
+        dnf install -y "$TMP_PKG" 2>/dev/null || yum install -y "$TMP_PKG"
+    fi
+    rm -f "$TMP_PKG"
 
     echo ""
     echo "=========================================="
@@ -142,7 +164,6 @@ install_native() {
     echo "  Management:"
     echo "    systemctl status vpn-gateway   # Status"
     echo "    journalctl -u vpn-gateway -f   # Logs"
-    echo "    sudo dpkg -r vpn-gateway       # Uninstall"
     echo ""
 }
 
@@ -152,8 +173,8 @@ echo ""
 echo "  1) Docker  - All-in-one container (recommended)"
 echo "               Requires: Docker"
 echo ""
-echo "  2) Native  - .deb package with systemd service"
-echo "               Requires: Debian/Ubuntu, wireguard, unbound"
+echo "  2) Native  - .deb/.rpm package with systemd service"
+echo "               Supports: Debian/Ubuntu, CentOS/Fedora/RHEL"
 echo ""
 printf "Select [1/2]: "
 read MODE
