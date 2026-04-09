@@ -3,6 +3,7 @@ name = "vpn-gateway"
 version = "1.0.0"
 edition = "2021"
 license = "Apache-2.0"
+description = "Transparent TCP/UDP proxy gateway that routes WireGuard VPN client traffic through a dynamic pool of free proxy servers"
 
 [dependencies]
 # Async runtime
