@@ -1,6 +1,15 @@
 #!/bin/sh
 set -e
 
+# Cleanup on container stop — tear down wg0 so it doesn't linger on the host
+cleanup() {
+    echo "[STOP] Shutting down..."
+    wg-quick down /app/data/wg0.conf 2>/dev/null || ip link delete wg0 2>/dev/null || true
+    kill "$(jobs -p)" 2>/dev/null || true
+    exit 0
+}
+trap cleanup TERM INT
+
 echo "[INIT] ==============================================="
 echo "[INIT] VPN Gateway - VPS Simple Mode"
 echo "[INIT] ==============================================="
@@ -45,16 +54,17 @@ EOF
 
     # Generate peers
     for i in $(seq 1 $PEER_COUNT); do
+        mkdir -p /app/data/wg/peer${i}
         wg genkey > /app/data/wg/peer${i}.key
         wg pubkey < /app/data/wg/peer${i}.key > /app/data/wg/peer${i}.pub
         CLIENT_ADDR="10.13.13.$((i+1))"
-        
+
         cat >> /app/data/wg0.conf << EOF
 [Peer]
 PublicKey = $(cat /app/data/wg/peer${i}.pub)
 AllowedIPs = ${CLIENT_ADDR}/32
 EOF
-        
+
     # Create client config
     cat > /app/data/wg/peer${i}/peer${i}.conf << EOF
 [Interface]
@@ -83,12 +93,12 @@ fi
 
 # Bring up WireGuard
 if command -v wg-quick >/dev/null 2>&1; then
-    if ! ip link show wg0 >/dev/null 2>&1; then
-        echo "[INIT] Bringing up WireGuard interface..."
-        wg-quick up /app/data/wg0.conf || true
-    else
-        echo "[INFO] WireGuard interface wg0 already up"
+    if ip link show wg0 >/dev/null 2>&1; then
+        echo "[INIT] WireGuard interface wg0 already exists, tearing down first..."
+        wg-quick down /app/data/wg0.conf 2>/dev/null || ip link delete wg0 2>/dev/null || true
     fi
+    echo "[INIT] Bringing up WireGuard interface..."
+    wg-quick up /app/data/wg0.conf
 fi
 
 # === Unbound DNS Setup ===
@@ -139,6 +149,13 @@ echo "[INIT] Configuring iptables (VPN routing only)..."
 
 # Enable forwarding for VPN
 echo 1 > /proc/sys/net/ipv4/ip_forward 2>/dev/null || true
+
+# Flush stale rules from previous runs to avoid duplicates
+iptables -D FORWARD -i wg0 -o eth0 -j ACCEPT 2>/dev/null || true
+iptables -D FORWARD -i eth0 -o wg0 -m state --state ESTABLISHED,RELATED -j ACCEPT 2>/dev/null || true
+iptables -t nat -D POSTROUTING -s 10.13.13.0/24 -o eth0 -j MASQUERADE 2>/dev/null || true
+iptables -t nat -D PREROUTING -i wg0 -p udp --dport 53 -j REDIRECT --to-port 5353 2>/dev/null || true
+iptables -t nat -D PREROUTING -i wg0 -p tcp -j REDIRECT --to-port 1080 2>/dev/null || true
 
 # FORWARD: drop by default, allow only VPN traffic
 iptables -P FORWARD DROP 2>/dev/null || true
