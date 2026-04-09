@@ -58,6 +58,30 @@ criterion = { version = "0.8", features = ["html_reports"] }
 name = "proxy_bench"
 harness = false
 
+[package.metadata.deb]
+maintainer = "VPN Gateway Contributors"
+copyright = "2024-2026"
+extended-description = """\
+Transparent TCP/UDP proxy gateway that routes WireGuard VPN client traffic \
+through a dynamic pool of free proxy servers. Includes WireGuard, Unbound DNS, \
+and automatic iptables configuration."""
+section = "net"
+priority = "optional"
+depends = "$auto, wireguard-tools, unbound, iptables, iproute2, ca-certificates, qrencode"
+assets = [
+    ["target/release/vpn-gateway", "usr/bin/", "755"],
+    ["config/gateway.json", "etc/vpn-gateway/gateway.json", "644"],
+    ["config/sources.json", "etc/vpn-gateway/sources.json", "644"],
+    ["scripts/entrypoint-simple.sh", "usr/lib/vpn-gateway/entrypoint.sh", "755"],
+    ["scripts/generate_wg_keys.sh", "usr/lib/vpn-gateway/generate_wg_keys.sh", "755"],
+    ["scripts/client-setup.sh", "usr/lib/vpn-gateway/client-setup.sh", "755"],
+    ["scripts/backup.sh", "usr/lib/vpn-gateway/backup.sh", "755"],
+    ["scripts/setup-network.sh", "usr/lib/vpn-gateway/setup-network.sh", "755"],
+    ["scripts/vpn-gateway-setup", "usr/bin/vpn-gateway-setup", "755"],
+]
+maintainer-scripts = "debian/"
+systemd-units = { unit-name = "vpn-gateway", enable = true, start = false }
+
 [profile.release]
 opt-level = 3
 lto = "fat"

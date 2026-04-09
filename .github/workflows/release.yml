@@ -33,6 +33,15 @@ jobs:
           cp target/release/vpn-gateway dist/vpn-gateway-linux-x86_64
           chmod +x dist/vpn-gateway-linux-x86_64
 
+      # Build .deb package
+      - name: Install cargo-deb
+        run: cargo install cargo-deb
+
+      - name: Build .deb package
+        run: |
+          cargo deb --no-build
+          cp target/debian/*.deb dist/
+
       # Docker image
       - uses: docker/login-action@v4
         with:
@@ -59,5 +68,7 @@ jobs:
       # GitHub Release
       - uses: softprops/action-gh-release@v2
         with:
-          files: dist/vpn-gateway-linux-x86_64
+          files: |
+            dist/vpn-gateway-linux-x86_64
+            dist/*.deb
           generate_release_notes: true
