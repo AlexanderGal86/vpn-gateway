@@ -1,0 +1,13 @@
+#!/bin/sh
+set -e
+
+case "$1" in
+    remove|upgrade)
+        # Stop and clean up network before removing
+        if systemctl is-active --quiet vpn-gateway; then
+            systemctl stop vpn-gateway
+        fi
+        ;;
+esac
+
+#DEBHELPER#
