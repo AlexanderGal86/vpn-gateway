@@ -4,7 +4,8 @@
 
 services:
   vpn-gateway:
-    build: .
+    image: ghcr.io/alexandergal86/vpn-gateway:latest
+    pull_policy: always
     container_name: vpn-gateway
     network_mode: host
     cap_add:
@@ -13,7 +14,6 @@ services:
     entrypoint: ["/entrypoint-simple.sh"]
     volumes:
       - ./data:/app/data
-      - ./config:/app/config:ro
     environment:
       - RUST_LOG=${LOG_LEVEL:-info}
       - WG_SERVER_URL=${WG_SERVER_URL:-auto}

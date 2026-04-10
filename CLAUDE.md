@@ -43,11 +43,13 @@ Config path override: `CONFIG_PATH=path/to/config.json cargo run`
 
 GitHub Actions runs `make check` (clippy + fmt + test) automatically on every push to `main` and on PRs. **Before running tests locally, check if CI already ran them** — this saves time and tokens.
 
-- **CI workflow** (`.github/workflows/ci.yml`): fmt → clippy → test → bench compile check
-- **Release workflow** (`.github/workflows/release.yml`): triggered by `v*` tags, builds Linux binary + Docker image → `ghcr.io`
+- **CI workflow** (`.github/workflows/ci.yml`): fmt → clippy → test → bench compile check → build+push Docker image to `ghcr.io/alexandergal86/vpn-gateway:latest` (push-to-main only, gated on tests passing)
+- **Release workflow** (`.github/workflows/release.yml`): triggered by `v*` tags, builds Linux binary and pushes versioned Docker image (`:X.Y.Z`, `:X.Y`, `:latest`) to `ghcr.io`
 - **Dependabot**: weekly PRs for Cargo, pip, and GitHub Actions dependency updates
 
-To create a release: `git tag v0.x.0 && git push --tags`
+To create a release: `git tag v1.1.0 && git push --tags`
+
+Distribution is Docker-only. End users run `docker compose up -d` with a `docker-compose.yml` that pulls from `ghcr.io` — no local build, no .deb/.rpm packages.
 
 ## Architecture
 
@@ -95,7 +97,6 @@ Single-container deployment with `network_mode: host`:
 | Script | Purpose |
 |--------|---------|
 | `entrypoint-simple.sh` | Docker entrypoint: WG + Unbound + iptables + Gateway |
-| `install.sh` | System-level install helper |
 | `client-setup.sh` | WireGuard client config helper |
 | `backup.sh` | Backup state and configs |
 | `generate_wg_keys.sh` | Generate WireGuard key pairs |
@@ -148,8 +149,14 @@ Single-container deployment with `network_mode: host`:
 
 ### Docker
 
-Single compose file: `docker-compose.yml` — single container with `network_mode: host`.
-Deploy with `make docker-up` / `make docker-down`.
+Single compose file: `docker-compose.yml` — single container with `network_mode: host`. It pulls a prebuilt image from `ghcr.io/alexandergal86/vpn-gateway:latest` (built by CI on every push to main). End-user install is just:
+
+```bash
+curl -O https://raw.githubusercontent.com/AlexanderGal86/vpn-gateway/main/docker-compose.yml
+docker compose up -d
+```
+
+For development: `make docker-up` / `make docker-down` (same flow, uses the pulled image).
 
 ### Data Directory
 

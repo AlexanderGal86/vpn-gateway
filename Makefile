@@ -57,7 +57,7 @@ bench:
 check: lint fmt test
 
 docker-up:
-	docker compose up -d --build
+	docker compose up -d
 	@echo "Waiting for services..."
 	@sleep 5
 	@echo "=== Service Status ==="
@@ -79,9 +79,8 @@ backup:
 	@bash scripts/backup.sh
 
 update:
-	git pull 2>/dev/null || true
 	docker compose pull
-	docker compose up -d --build
+	docker compose up -d
 
 client:
 	@bash scripts/client-setup.sh

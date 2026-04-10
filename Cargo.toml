@@ -1,6 +1,6 @@
 [package]
 name = "vpn-gateway"
-version = "1.0.0"
+version = "1.1.0"
 edition = "2021"
 license = "Apache-2.0"
 
@@ -58,53 +58,6 @@ criterion = { version = "0.8", features = ["html_reports"] }
 [[bench]]
 name = "proxy_bench"
 harness = false
-
-[package.metadata.deb]
-maintainer = "VPN Gateway Contributors"
-copyright = "2024-2026"
-extended-description = """\
-Transparent TCP/UDP proxy gateway that routes WireGuard VPN client traffic \
-through a dynamic pool of free proxy servers. Includes WireGuard, Unbound DNS, \
-and automatic iptables configuration."""
-section = "net"
-priority = "optional"
-depends = "$auto, wireguard-tools, unbound, iptables, iproute2, ca-certificates, qrencode"
-assets = [
-    ["target/release/vpn-gateway", "usr/bin/", "755"],
-    ["config/gateway.json", "etc/vpn-gateway/gateway.json", "644"],
-    ["config/sources.json", "etc/vpn-gateway/sources.json", "644"],
-    ["scripts/entrypoint-simple.sh", "usr/lib/vpn-gateway/entrypoint.sh", "755"],
-    ["scripts/generate_wg_keys.sh", "usr/lib/vpn-gateway/generate_wg_keys.sh", "755"],
-    ["scripts/client-setup.sh", "usr/lib/vpn-gateway/client-setup.sh", "755"],
-    ["scripts/backup.sh", "usr/lib/vpn-gateway/backup.sh", "755"],
-    ["scripts/setup-network.sh", "usr/lib/vpn-gateway/setup-network.sh", "755"],
-    ["scripts/vpn-gateway-setup", "usr/bin/vpn-gateway-setup", "755"],
-]
-maintainer-scripts = "debian/"
-systemd-units = { unit-name = "vpn-gateway", enable = true, start = false }
-
-[package.metadata.generate-rpm]
-assets = [
-    { source = "target/release/vpn-gateway", dest = "/usr/bin/vpn-gateway", mode = "755" },
-    { source = "scripts/vpn-gateway-setup", dest = "/usr/bin/vpn-gateway-setup", mode = "755" },
-    { source = "config/gateway.json", dest = "/etc/vpn-gateway/gateway.json", mode = "644", config = true },
-    { source = "config/sources.json", dest = "/etc/vpn-gateway/sources.json", mode = "644", config = true },
-    { source = "scripts/setup-network.sh", dest = "/usr/lib/vpn-gateway/setup-network.sh", mode = "755" },
-    { source = "scripts/entrypoint-simple.sh", dest = "/usr/lib/vpn-gateway/entrypoint.sh", mode = "755" },
-    { source = "scripts/generate_wg_keys.sh", dest = "/usr/lib/vpn-gateway/generate_wg_keys.sh", mode = "755" },
-    { source = "scripts/client-setup.sh", dest = "/usr/lib/vpn-gateway/client-setup.sh", mode = "755" },
-    { source = "scripts/backup.sh", dest = "/usr/lib/vpn-gateway/backup.sh", mode = "755" },
-    { source = "debian/vpn-gateway.service", dest = "/usr/lib/systemd/system/vpn-gateway.service", mode = "644" },
-]
-post_install_script = "rpm/postinst.sh"
-pre_uninstall_script = "rpm/prerm.sh"
-
-[package.metadata.generate-rpm.requires]
-wireguard-tools = "*"
-unbound = "*"
-iptables = "*"
-iproute = "*"
-qrencode = "*"
 
 [profile.release]
 opt-level = 3

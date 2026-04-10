@@ -204,42 +204,41 @@ Single container with `network_mode: host`:
 - **Linux host** (iptables required for transparent proxying)
 - **Open port**: UDP 51820 (WireGuard)
 
-### 1. Clone and configure
+### Install (3 lines)
 
 ```bash
-git clone https://github.com/alexandergal86/vpn-gateway.git
-cd vpn-gateway
+mkdir vpn-gateway && cd vpn-gateway
+curl -O https://raw.githubusercontent.com/AlexanderGal86/vpn-gateway/main/docker-compose.yml
+docker compose up -d
 ```
 
-### 2. Deploy
+That's it — the prebuilt image is pulled from `ghcr.io/alexandergal86/vpn-gateway:latest`. No local build, no cloning.
+
+### WireGuard client configs
+
+After the first start, peer configs are generated in `./data/wg/`:
 
 ```bash
-make docker-up
-```
-
-### 3. Connect WireGuard clients
-
-```bash
-# Show QR codes for mobile clients
-make client
-
-# Or view generated configs
-make wg-show-configs
+cat ./data/wg/peer1/peer1.conf        # config file
+ls  ./data/wg/peer1/peer1-qr.png      # QR code for mobile
 ```
 
 Scan the QR code with the WireGuard mobile app, or import the `.conf` file on desktop.
 
-### 4. Verify
+### Verify
 
 ```bash
-# Check gateway health
-curl http://localhost:8080/health
+# Check gateway health (API is bound to the WireGuard interface)
+curl http://10.13.13.1:8080/health
 
-# Check proxy count
-make status
+# Follow logs
+docker compose logs -f
+```
 
-# Test connection through proxy
-make test-connection
+### Update
+
+```bash
+docker compose pull && docker compose up -d
 ```
 
 ---
@@ -249,6 +248,10 @@ make test-connection
 ### Local Development (without Docker)
 
 ```bash
+# Clone for development only (end users don't need this)
+git clone https://github.com/alexandergal86/vpn-gateway.git
+cd vpn-gateway
+
 # Build release binary
 make build
 
@@ -270,12 +273,13 @@ CONFIG_PATH=path/to/custom.json cargo run
 
 ### Docker Deployment
 
-Single-container deployment with `network_mode: host`:
+Single-container deployment with `network_mode: host`, pulling the prebuilt image from `ghcr.io`:
 
 ```bash
-make docker-up     # Start
-make docker-down   # Stop
-make docker-logs   # View logs
+docker compose up -d        # Start (pulls latest image automatically)
+docker compose down         # Stop
+docker compose logs -f      # View logs
+docker compose pull && docker compose up -d   # Update
 ```
 
 ### Configuration
@@ -568,7 +572,7 @@ make docker-logs        # Follow logs
 # Utilities
 make status             # Container status + proxy count
 make backup             # Backup state and configs
-make update             # Pull latest + rebuild
+make update             # Pull latest image and restart
 make client             # WireGuard client QR code
 make shell              # Shell in gateway container
 make test-connection    # Test SOCKS5 proxy
