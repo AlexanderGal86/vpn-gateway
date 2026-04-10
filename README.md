@@ -214,17 +214,20 @@ cd vpn-gateway
 ### 2. Deploy
 
 ```bash
-make docker-up
+docker compose up --build -d
 ```
 
 ### 3. Connect WireGuard clients
 
-```bash
-# Show QR codes for mobile clients
-make client
+Peer configs and QR codes are generated automatically on first startup:
 
-# Or view generated configs
-make wg-show-configs
+```bash
+# View generated configs
+ls data/wg/peer1/
+cat data/wg/peer1/peer1.conf
+
+# QR code image for mobile
+data/wg/peer1/peer1-qr.png
 ```
 
 Scan the QR code with the WireGuard mobile app, or import the `.conf` file on desktop.
@@ -273,9 +276,9 @@ CONFIG_PATH=path/to/custom.json cargo run
 Single-container deployment with `network_mode: host`:
 
 ```bash
-make docker-up     # Start
-make docker-down   # Stop
-make docker-logs   # View logs
+docker compose up --build -d   # Build and start
+docker compose down            # Stop
+docker compose logs -f         # View logs
 ```
 
 ### Configuration
@@ -363,24 +366,17 @@ curl -s http://localhost:8080/metrics
 
 ### GeoIP Setup
 
-```bash
-# Option 1: GeoLite2-City (~68MB, more detailed)
-make geoip-update
+GeoIP is **automatically downloaded** on first container startup from the MaxMind GeoLite2 community mirror and **updated weekly** in the background. No manual setup required.
 
-# Option 2: DB-IP City Lite (~19MB, compact)
-make geoip-update-dbip
-```
+The database is stored at `data/GeoLite2-City.mmdb` (excluded from git, regenerated on each new deploy).
 
-Then set `geoip_path` in `config/gateway.json`:
+To filter by preferred countries, add to `config/gateway.json`:
 
 ```json
 {
-  "geoip_path": "data/GeoLite2-City.mmdb",
   "preferred_countries": ["US", "DE", "NL"]
 }
 ```
-
-Without a local database, GeoIP falls back to the `geo.wp-statistics.com` API.
 
 ### WireGuard Client Setup
 
@@ -498,10 +494,11 @@ After the cooldown period, the proxy is re-tested. If it passes health check, th
 The Docker entrypoint (`scripts/entrypoint-simple.sh`) configures the network stack:
 
 1. **WireGuard setup** — Generates keys and `wg0.conf` if not exists, brings up `wg0` interface
-2. **Unbound DNS** — Starts recursive DNS resolver on `:5353`
-3. **FORWARD policy** — `DROP` by default, allow only `wg0↔eth0` (VPN traffic)
-4. **NAT** — MASQUERADE for WireGuard subnet, PREROUTING REDIRECT for TCP→`:1080` and DNS→`:5353`
-5. **No INPUT/OUTPUT changes** — VPS hoster manages SSH, monitoring, and management ports
+2. **Unbound DNS** — Creates `data/unbound/unbound.conf` if not exists, starts resolver on `10.13.13.1:5353`
+3. **GeoIP database** — Downloads `GeoLite2-City.mmdb` on first run; background weekly update loop
+4. **FORWARD policy** — `DROP` by default, allow only `wg0↔eth0` (VPN traffic)
+5. **NAT** — MASQUERADE for WireGuard subnet, PREROUTING REDIRECT for TCP→`:1080` and DNS→`:5353`
+6. **No INPUT/OUTPUT changes** — VPS hoster manages SSH, monitoring, and management ports
 
 **Important**: Runs with `network_mode: host`, so iptables rules apply to the host. INPUT/OUTPUT policies are deliberately left untouched.
 
@@ -523,13 +520,16 @@ The Docker entrypoint (`scripts/entrypoint-simple.sh`) configures the network st
 
 ```
 data/
-├── wg/                  # WireGuard keys and peer configs
+├── wg/                       # WireGuard keys and peer configs (auto-generated)
 │   ├── server.key/pub
 │   └── peer1/peer1.conf, peer1-qr.png
-├── wg0.conf             # WireGuard server config (auto-generated)
-├── unbound/             # Unbound DNS config
-└── state.json           # Proxy pool state (auto-saved every 300s)
+├── wg0.conf                  # WireGuard server config (auto-generated)
+├── unbound/unbound.conf      # Unbound DNS config (auto-generated)
+├── GeoLite2-City.mmdb        # GeoIP database (auto-downloaded, weekly updates)
+└── state.json                # Proxy pool state (auto-saved every 300s)
 ```
+
+All files in `data/` are excluded from git and regenerated on first startup.
 
 ---
 

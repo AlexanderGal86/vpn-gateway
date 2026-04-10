@@ -62,3 +62,75 @@ Dashboard showed "--" for TLS Clean and TLS MITM.
 - `src/main.rs` - added crypto provider init
 - `src/api/web.rs` - added tls_clean_proxies and mitm_proxies to metrics, added tls_clean to ProxyInfo
 - `scripts/entrypoint-simple.sh` - fixed iptables redirect rules
+
+---
+
+# Session Log - 2026-04-10 (Build & Distribution)
+
+## Task
+Привести проект к финальному рабочему состоянию. Подготовить к публикации на GitHub как самодостаточный дистрибутив.
+
+## Context
+Рабочая версия (`vpn-gateway-old`) использовалась как source of truth. Новый деплой (`vpn-gateway`) собирался из исходников с исправлениями.
+
+## Fixes Applied
+
+### 1. DNS upstream port (CRITICAL)
+`src/config.rs` и `config/gateway.json`: дефолт изменён с `10.13.13.1:53` на `10.13.13.1:5353`.
+
+**Причина**: Unbound слушает на порту 5353 (порт 53 занят `systemd-resolved` на хосте). UDP relay отправлял DNS-запросы в `systemd-resolved` вместо Unbound — DNS не работал.
+
+### 2. Unbound interface binding
+`scripts/entrypoint-simple.sh`: при генерации `unbound.conf` изменено `interface: 0.0.0.0` → `interface: 10.13.13.1`.
+
+**Причина**: Unbound на `0.0.0.0` слушал публично через eth0, что небезопасно.
+
+### 3. procps package in Dockerfile
+Добавлен пакет `procps` в runtime образ.
+
+**Причина**: `pgrep -x unbound` в entrypoint падало с `pgrep: not found`.
+
+### 4. curl package in Dockerfile
+Добавлен пакет `curl` в runtime образ.
+
+**Причина**: Необходим для автоматического скачивания GeoIP базы.
+
+### 5. GeoIP auto-download
+В `scripts/entrypoint-simple.sh` добавлена секция:
+- Скачивание `GeoLite2-City.mmdb` при первом запуске (если файл отсутствует)
+- Обновление если файл старше 7 дней
+- Фоновый цикл еженедельного обновления
+
+Источник: `https://github.com/P3TERX/GeoLite.mmdb/raw/download/GeoLite2-City.mmdb`
+
+### 6. .gitignore — WireGuard private keys
+Добавлены исключения:
+```
+/data/wg0.conf
+/data/wg/peer*/
+/data/wg/templates/
+/data/peer*.conf
+```
+
+**Причина**: Эти файлы содержат приватные ключи WireGuard и не должны попадать в публичный репозиторий.
+
+### 7. config/gateway.json
+Добавлены явные поля:
+- `"dns_upstream": "10.13.13.1:5353"` — чтобы не зависеть от дефолта в коде
+- `"geoip_path": "data/GeoLite2-City.mmdb"` — путь к автоскачанной базе
+
+## Final Status
+- Container: `vpn-gateway` — running
+- WireGuard: `wg0` at `10.13.13.1/24`
+- Unbound DNS: `10.13.13.1:5353` ✓
+- GeoIP: loaded from `data/GeoLite2-City.mmdb` ✓
+- Proxy pool: ~4000 proxies, ~10 TLS-clean
+- API: `http://10.13.13.1:8080` (WireGuard) + `http://127.0.0.1:8080` (localhost)
+- External API: BLOCKED
+
+## Files Modified
+- `src/config.rs` — dns_upstream default → 5353
+- `scripts/entrypoint-simple.sh` — Unbound interface, GeoIP auto-download, procps check
+- `Dockerfile` — added curl, procps
+- `config/gateway.json` — added dns_upstream, geoip_path
+- `.gitignore` — added WireGuard key exclusions

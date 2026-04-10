@@ -55,3 +55,6 @@ base.base
 /data/wg/peer*/
 /data/wg/templates/
 /data/peer*.conf
+
+# Diagnostic artifacts
+diagnostic-*.md
