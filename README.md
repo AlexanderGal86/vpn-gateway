@@ -325,6 +325,22 @@ All fields have sane defaults. The config supports hot-reload — changes are pi
 
 27 built-in sources are used as fallback if the file is missing or malformed.
 
+### Dashboard
+
+A built-in web dashboard is available at `http://10.13.13.1:8080/` (accessible from WireGuard clients and localhost only — blocked externally by iptables).
+
+**Tabs:**
+
+| Tab | Description |
+|-----|-------------|
+| **Overview** | Status indicator, total/verified/available proxy counts, TLS Clean vs MITM counts, active connections, proxy rotations |
+| **Proxies** | Full proxy list sorted by latency. Filter by host, country, protocol. Add, ban, or unban proxies manually |
+| **Metrics** | Raw Prometheus metrics from `/metrics` — copy or scrape for Grafana |
+| **WireGuard** | Peer list with download links for `.conf` files and QR code images for mobile clients |
+| **API Reference** | Built-in documentation of all REST endpoints |
+
+The dashboard auto-refreshes and shows real-time proxy pool health. TLS-clean proxies are highlighted in green (safe for HTTPS), MITM proxies in red (HTTP only).
+
 ### API Reference
 
 | Method | Endpoint | Description |
