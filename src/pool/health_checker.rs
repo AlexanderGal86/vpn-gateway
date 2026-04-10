@@ -13,6 +13,7 @@ const MAX_GEOIP_CONCURRENT: usize = 20;
 /// TLS validation target — high availability, fast response, not blocked in most countries.
 const TLS_CHECK_HOST: &str = "cloudflare.com";
 const TLS_CHECK_PORT: u16 = 443;
+const CONNECT_CHECK_PORT: u16 = 80;
 
 /// Result of a full proxy health check (3-stage).
 enum CheckResult {
@@ -45,7 +46,7 @@ async fn check_tcp_connect(proxy: &Proxy, timeout_ms: u64) -> (String, Result<f6
 }
 
 /// Stage 2: HTTP CONNECT through proxy to verify it actually works.
-/// Sends CONNECT to httpbin.org:80 and checks for 200 response.
+/// Sends CONNECT to cloudflare.com:80 and checks for 200 response.
 async fn check_http_connect(proxy: &Proxy, timeout_ms: u64) -> (String, Result<f64, ()>) {
     let key = proxy.key();
     let start = Instant::now();
@@ -62,8 +63,8 @@ async fn check_http_connect(proxy: &Proxy, timeout_ms: u64) -> (String, Result<f
 
     let (read_half, mut write_half) = tokio::io::split(stream);
 
-    let request = b"CONNECT httpbin.org:80 HTTP/1.1\r\nHost: httpbin.org:80\r\n\r\n";
-    if write_half.write_all(request).await.is_err() {
+    let connect_req = format!("CONNECT {}:{} HTTP/1.1\r\nHost: {}:{}\r\n\r\n", TLS_CHECK_HOST, CONNECT_CHECK_PORT, TLS_CHECK_HOST, CONNECT_CHECK_PORT);
+    if write_half.write_all(connect_req.as_bytes()).await.is_err() {
         return (key, Err(()));
     }
 
