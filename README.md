@@ -204,18 +204,25 @@ Single container with `network_mode: host`:
 - **Linux host** (iptables required for transparent proxying)
 - **Open port**: UDP 51820 (WireGuard)
 
-### 1. Clone and configure
+### 1. Get docker-compose.yml
 
 ```bash
-git clone https://github.com/alexandergal86/vpn-gateway.git
+# Option A: one file only (no source code needed)
+curl -O https://raw.githubusercontent.com/AlexanderGal86/vpn-gateway/main/docker-compose.yml
+mkdir data
+
+# Option B: clone full repo (for customization or development)
+git clone https://github.com/AlexanderGal86/vpn-gateway.git
 cd vpn-gateway
 ```
 
 ### 2. Deploy
 
 ```bash
-docker compose up --build -d
+docker compose up -d
 ```
+
+The pre-built image is pulled automatically from `ghcr.io`. No compilation needed.
 
 ### 3. Connect WireGuard clients
 
@@ -238,11 +245,11 @@ Scan the QR code with the WireGuard mobile app, or import the `.conf` file on de
 # Check gateway health
 curl http://localhost:8080/health
 
-# Check proxy count
-make status
+# View logs
+docker compose logs -f
 
 # Test connection through proxy
-make test-connection
+curl -x socks5://localhost:1080 https://ifconfig.me
 ```
 
 ---
@@ -559,6 +566,36 @@ All files in `data/` are excluded from git and regenerated on first startup.
 | **OS** | Ubuntu 22.04+ / Debian 12+ | Ubuntu 24.04 LTS |
 | **Docker** | 24.0+ | Latest stable |
 | **Open ports** | UDP 51820 | UDP 51820 |
+
+---
+
+## Versioning & Releases
+
+Releases follow [Semantic Versioning](https://semver.org/). Versions are bumped automatically based on [Conventional Commits](https://www.conventionalcommits.org/):
+
+| Commit prefix | Version bump | Example |
+|---------------|-------------|---------|
+| `fix:` | patch `x.x.+1` | `fix: handle nil proxy in selector` |
+| `feat:` | minor `x.+1.0` | `feat: add IPv6 support` |
+| `feat!:` or `BREAKING CHANGE:` | major `+1.0.0` | `feat!: new config format` |
+| `docs:`, `ci:`, `chore:` | no bump | — |
+
+**How it works:**
+1. Commits to `main` are parsed by [release-please](https://github.com/googleapis/release-please)
+2. An auto-generated PR accumulates changelog entries and bumps `Cargo.toml` version
+3. Merging the release PR creates a tag `vX.Y.Z`
+4. The tag triggers `release.yml` which:
+   - Builds Docker image tagged `vX.Y.Z`, `X.Y`, and `latest`
+   - Pushes to `ghcr.io/alexandergal86/vpn-gateway`
+   - Creates GitHub Release with binary, `.deb`, and `.rpm` packages
+
+**Available image tags:**
+
+| Tag | Description |
+|-----|-------------|
+| `latest` | Latest stable release |
+| `v1.2.3` | Specific version (pinned) |
+| `sha-a1b2c3` | Specific commit (CI builds) |
 
 ---
 
