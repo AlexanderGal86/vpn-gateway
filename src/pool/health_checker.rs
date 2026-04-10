@@ -63,7 +63,10 @@ async fn check_http_connect(proxy: &Proxy, timeout_ms: u64) -> (String, Result<f
 
     let (read_half, mut write_half) = tokio::io::split(stream);
 
-    let connect_req = format!("CONNECT {}:{} HTTP/1.1\r\nHost: {}:{}\r\n\r\n", TLS_CHECK_HOST, CONNECT_CHECK_PORT, TLS_CHECK_HOST, CONNECT_CHECK_PORT);
+    let connect_req = format!(
+        "CONNECT {}:{} HTTP/1.1\r\nHost: {}:{}\r\n\r\n",
+        TLS_CHECK_HOST, CONNECT_CHECK_PORT, TLS_CHECK_HOST, CONNECT_CHECK_PORT
+    );
     if write_half.write_all(connect_req.as_bytes()).await.is_err() {
         return (key, Err(()));
     }
