@@ -1,0 +1,57 @@
+# Rust build artifacts
+/target/
+
+# Runtime data
+/data/state.json
+/data/clients/
+/data/network-status.json
+/data/GeoLite2-*.mmdb
+/data/dbip-*.mmdb
+/data/*.key
+# WireGuard keys (private!)
+/data/wg/peer*.key
+/data/wg/peer*.pub
+/data/wg/server.key
+/data/wg/server.pub
+/data/wg/wg_confs/
+/data/wg/wg_confs/
+/data/wg/.donoteditthisfile
+/data/wg/coredns/
+
+# Environment files (contain local network config)
+.env
+.env.lan
+
+# Unbound runtime
+config/unbound/unbound.pid
+config/unbound/dev/
+config/unbound/var/
+data/unbound/
+
+# Logs
+*.log
+gateway.log
+
+# OS files
+Thumbs.db
+*.Zone.Identifier
+
+# IDE
+.vscode/
+.idea/
+.obsidian/
+
+# Python cache
+__pycache__/
+
+# Claude Code
+.claude/
+
+# Misc
+base.base
+
+# WireGuard server and peer configs (contain private keys — generated at runtime)
+/data/wg0.conf
+/data/wg/peer*/
+/data/wg/templates/
+/data/peer*.conf

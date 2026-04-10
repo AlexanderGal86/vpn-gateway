@@ -1,0 +1,780 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>VPN Gateway Dashboard</title>
+<style>
+:root {
+  --bg: #0f1117;
+  --surface: #1a1d27;
+  --surface2: #242836;
+  --border: #2e3348;
+  --text: #e1e4ed;
+  --text2: #8b90a5;
+  --accent: #6c8cff;
+  --accent2: #4a6adf;
+  --green: #4ade80;
+  --red: #f87171;
+  --yellow: #fbbf24;
+  --orange: #fb923c;
+  --radius: 8px;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  min-height: 100vh;
+}
+
+/* Header */
+header {
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  padding: 0 24px;
+  display: flex;
+  align-items: center;
+  height: 56px;
+  gap: 16px;
+}
+header h1 {
+  font-size: 16px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+header .version {
+  font-size: 11px;
+  color: var(--text2);
+  background: var(--surface2);
+  padding: 2px 8px;
+  border-radius: 10px;
+}
+header .status-dot {
+  width: 8px; height: 8px;
+  border-radius: 50%;
+  background: var(--red);
+  flex-shrink: 0;
+}
+header .status-dot.ok { background: var(--green); }
+header .spacer { flex: 1; }
+header .api-url {
+  font-size: 12px;
+  color: var(--text2);
+  font-family: monospace;
+}
+#refresh-btn {
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  color: var(--text2);
+  padding: 6px 12px;
+  border-radius: var(--radius);
+  cursor: pointer;
+  font-size: 12px;
+}
+#refresh-btn:hover { background: var(--border); color: var(--text); }
+
+/* Tabs */
+.tabs {
+  display: flex;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  padding: 0 24px;
+  gap: 0;
+  overflow-x: auto;
+}
+.tab {
+  padding: 12px 20px;
+  font-size: 13px;
+  color: var(--text2);
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  white-space: nowrap;
+  transition: color 0.15s, border-color 0.15s;
+}
+.tab:hover { color: var(--text); }
+.tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+
+/* Content */
+.content { padding: 24px; max-width: 1200px; margin: 0 auto; }
+.panel { display: none; }
+.panel.active { display: block; }
+
+/* Cards */
+.cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 16px;
+  margin-bottom: 24px;
+}
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 16px;
+}
+.card .label { font-size: 12px; color: var(--text2); margin-bottom: 4px; }
+.card .value { font-size: 28px; font-weight: 700; }
+.card .value.green { color: var(--green); }
+.card .value.yellow { color: var(--yellow); }
+.card .value.red { color: var(--red); }
+
+/* Table */
+.table-wrap {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+table { width: 100%; border-collapse: collapse; font-size: 13px; }
+th {
+  text-align: left;
+  padding: 10px 12px;
+  background: var(--surface2);
+  color: var(--text2);
+  font-weight: 500;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  cursor: pointer;
+  user-select: none;
+}
+th:hover { color: var(--text); }
+td { padding: 8px 12px; border-top: 1px solid var(--border); }
+tr:hover td { background: rgba(108,140,255,0.04); }
+.badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: 11px;
+  font-weight: 500;
+}
+.badge.http { background: #1e3a5f; color: #60a5fa; }
+.badge.socks5 { background: #3b1f4e; color: #c084fc; }
+.badge.tls-clean { background: #14532d; color: var(--green); }
+.badge.tls-mitm { background: #7f1d1d; color: var(--red); }
+.badge.tls-unknown { background: #3b3b1f; color: var(--yellow); }
+.mono { font-family: 'SF Mono', 'Consolas', monospace; font-size: 12px; }
+
+/* Forms */
+.form-row {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 12px;
+  align-items: flex-end;
+}
+.form-group { display: flex; flex-direction: column; gap: 4px; }
+.form-group label { font-size: 11px; color: var(--text2); text-transform: uppercase; letter-spacing: 0.5px; }
+input, select {
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 8px 12px;
+  border-radius: var(--radius);
+  font-size: 13px;
+  outline: none;
+}
+input:focus, select:focus { border-color: var(--accent); }
+input::placeholder { color: var(--text2); }
+button {
+  background: var(--accent);
+  border: none;
+  color: #fff;
+  padding: 8px 16px;
+  border-radius: var(--radius);
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+button:hover { background: var(--accent2); }
+button.danger { background: var(--red); }
+button.danger:hover { background: #dc2626; }
+button.secondary { background: var(--surface2); border: 1px solid var(--border); color: var(--text2); }
+button.secondary:hover { background: var(--border); color: var(--text); }
+
+/* Metrics pre */
+.metrics-pre {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 16px;
+  font-family: 'SF Mono', 'Consolas', monospace;
+  font-size: 12px;
+  line-height: 1.6;
+  overflow-x: auto;
+  white-space: pre-wrap;
+  color: var(--text2);
+  max-height: 600px;
+  overflow-y: auto;
+}
+
+/* Section */
+.section { margin-bottom: 24px; }
+.section-title { font-size: 14px; font-weight: 600; margin-bottom: 12px; }
+.section-desc { font-size: 12px; color: var(--text2); margin-bottom: 16px; line-height: 1.5; }
+
+/* Toast */
+.toast {
+  position: fixed;
+  bottom: 24px;
+  right: 24px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 12px 20px;
+  font-size: 13px;
+  z-index: 100;
+  opacity: 0;
+  transform: translateY(10px);
+  transition: opacity 0.2s, transform 0.2s;
+}
+.toast.show { opacity: 1; transform: translateY(0); }
+.toast.error { border-color: var(--red); }
+
+/* API reference */
+.endpoint-list { display: flex; flex-direction: column; gap: 8px; }
+.endpoint {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 12px 16px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.endpoint .method {
+  font-family: monospace;
+  font-size: 11px;
+  font-weight: 700;
+  padding: 2px 8px;
+  border-radius: 4px;
+  min-width: 48px;
+  text-align: center;
+}
+.method.get { background: #1e3a5f; color: #60a5fa; }
+.method.post { background: #14532d; color: var(--green); }
+.endpoint .path { font-family: monospace; font-size: 13px; min-width: 240px; }
+.endpoint .desc { font-size: 12px; color: var(--text2); }
+
+/* Search */
+.search-bar {
+  margin-bottom: 16px;
+  display: flex;
+  gap: 8px;
+}
+.search-bar input { flex: 1; }
+
+/* Peer cards */
+.peer-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  gap: 16px;
+}
+.peer-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 16px;
+}
+.peer-card .peer-name { font-weight: 600; margin-bottom: 8px; font-size: 15px; }
+.peer-card .peer-detail { font-size: 12px; color: var(--text2); margin-bottom: 4px; }
+.peer-card .peer-detail span { color: var(--text); font-family: monospace; }
+.peer-card .peer-actions { margin-top: 12px; display: flex; gap: 8px; flex-wrap: wrap; }
+.peer-card .peer-actions a, .peer-card .peer-actions button {
+  font-size: 12px; padding: 5px 12px; text-decoration: none;
+}
+.peer-qr { margin-top: 12px; text-align: center; }
+.peer-qr img { max-width: 200px; border-radius: var(--radius); border: 1px solid var(--border); }
+
+/* Loading */
+.loading { text-align: center; padding: 40px; color: var(--text2); }
+
+/* Settings bar */
+.settings-bar {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 24px;
+  flex-wrap: wrap;
+}
+.settings-bar label { font-size: 12px; color: var(--text2); }
+.settings-bar input { width: 260px; }
+
+@media (max-width: 640px) {
+  .cards { grid-template-columns: 1fr 1fr; }
+  .form-row { flex-wrap: wrap; }
+  .endpoint { flex-wrap: wrap; }
+  .endpoint .path { min-width: unset; }
+}
+</style>
+</head>
+<body>
+
+<header>
+  <span class="status-dot" id="status-dot"></span>
+  <h1>VPN Gateway</h1>
+  <span class="version">v1.0.0</span>
+  <span class="spacer"></span>
+  <span class="api-url" id="api-url-display"></span>
+  <button id="refresh-btn" onclick="refreshAll()">Refresh</button>
+</header>
+
+<div class="tabs">
+  <div class="tab active" data-tab="overview">Overview</div>
+  <div class="tab" data-tab="proxies">Proxies</div>
+  <div class="tab" data-tab="manage">Management</div>
+  <div class="tab" data-tab="metrics">Metrics</div>
+  <div class="tab" data-tab="wireguard">WireGuard</div>
+  <div class="tab" data-tab="reference">API Reference</div>
+</div>
+
+<div class="content">
+
+  <!-- Settings bar -->
+  <div class="settings-bar">
+    <label>API:</label>
+    <input type="text" id="api-url-input" placeholder="http://10.13.13.1:8080" value="">
+    <button class="secondary" onclick="saveApiUrl()">Save</button>
+    <label style="margin-left: 8px;">Auto-refresh:</label>
+    <select id="auto-refresh" onchange="setAutoRefresh()">
+      <option value="0">Off</option>
+      <option value="5">5s</option>
+      <option value="10" selected>10s</option>
+      <option value="30">30s</option>
+    </select>
+  </div>
+
+  <!-- Overview -->
+  <div class="panel active" id="panel-overview">
+    <div class="section">
+      <div class="section-desc">
+        Health status and key metrics. Auto-refreshes periodically.
+      </div>
+    </div>
+    <div class="cards" id="overview-cards">
+      <div class="card"><div class="label">Status</div><div class="value" id="ov-status">--</div></div>
+      <div class="card"><div class="label">Total proxies</div><div class="value" id="ov-total">--</div></div>
+      <div class="card"><div class="label">Verified</div><div class="value green" id="ov-verified">--</div></div>
+      <div class="card"><div class="label">Available</div><div class="value" id="ov-available">--</div></div>
+      <div class="card"><div class="label">TLS Clean</div><div class="value green" id="ov-tls-clean">--</div></div>
+      <div class="card"><div class="label">TLS MITM</div><div class="value red" id="ov-tls-mitm">--</div></div>
+      <div class="card"><div class="label">Total requests</div><div class="value" id="ov-requests">--</div></div>
+      <div class="card"><div class="label">Active connections</div><div class="value" id="ov-connections">--</div></div>
+      <div class="card"><div class="label">Proxy rotations</div><div class="value" id="ov-rotations">--</div></div>
+    </div>
+  </div>
+
+  <!-- Proxies -->
+  <div class="panel" id="panel-proxies">
+    <div class="section">
+      <div class="section-desc">
+        Active proxy list sorted by latency. TLS Clean = safe for HTTPS. MITM = HTTP only.
+      </div>
+    </div>
+    <div class="search-bar">
+      <input type="text" id="proxy-search" placeholder="Filter by host, country, protocol..." oninput="filterProxies()">
+      <button class="secondary" onclick="loadProxies()">Reload</button>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th onclick="sortProxies('host')">Host:Port</th>
+            <th onclick="sortProxies('protocol')">Protocol</th>
+            <th onclick="sortProxies('latency_ms')">Latency</th>
+            <th onclick="sortProxies('success_count')">Success</th>
+            <th onclick="sortProxies('fail_count')">Fails</th>
+            <th onclick="sortProxies('country')">Country</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody id="proxy-tbody"></tbody>
+      </table>
+    </div>
+    <div style="margin-top: 8px; font-size: 12px; color: var(--text2);">
+      <span id="proxy-count">0</span> proxies shown
+    </div>
+  </div>
+
+  <!-- Management -->
+  <div class="panel" id="panel-manage">
+    <div class="section">
+      <div class="section-title">Add Proxy</div>
+      <div class="section-desc">
+        Manually add a proxy to the pool. It will be validated during the next health check cycle.
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label>Host</label>
+          <input type="text" id="add-host" placeholder="1.2.3.4" style="width: 180px;">
+        </div>
+        <div class="form-group">
+          <label>Port</label>
+          <input type="number" id="add-port" placeholder="8080" style="width: 100px;">
+        </div>
+        <div class="form-group">
+          <label>Protocol</label>
+          <select id="add-protocol" style="width: 120px;">
+            <option value="http">HTTP</option>
+            <option value="socks5">SOCKS5</option>
+          </select>
+        </div>
+        <button onclick="addProxy()">Add</button>
+      </div>
+    </div>
+
+    <div class="section">
+      <div class="section-title">Ban / Unban Proxy</div>
+      <div class="section-desc">
+        Ban removes the proxy from the active pool. Unban restores it. Use host:port format.
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label>Proxy key (host:port)</label>
+          <input type="text" id="ban-key" placeholder="1.2.3.4:8080" style="width: 240px;">
+        </div>
+        <button class="danger" onclick="banProxy()">Ban</button>
+        <button class="secondary" onclick="unbanProxy()">Unban</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Metrics -->
+  <div class="panel" id="panel-metrics">
+    <div class="section">
+      <div class="section-desc">
+        Raw Prometheus metrics from <code>/metrics</code>. Scrape this endpoint for Grafana/Prometheus monitoring.
+      </div>
+    </div>
+    <div class="form-row" style="margin-bottom:16px;">
+      <button class="secondary" onclick="loadMetrics()">Reload</button>
+      <button class="secondary" onclick="copyMetrics()">Copy</button>
+    </div>
+    <pre class="metrics-pre" id="metrics-pre">Loading...</pre>
+  </div>
+
+  <!-- WireGuard -->
+  <div class="panel" id="panel-wireguard">
+    <div class="section">
+      <div class="section-desc">
+        WireGuard peers configured on the server. Download config files or scan QR codes on mobile.
+      </div>
+    </div>
+    <div class="peer-cards" id="peer-cards">
+      <div class="loading">Loading...</div>
+    </div>
+  </div>
+
+  <!-- API Reference -->
+  <div class="panel" id="panel-reference">
+    <div class="section">
+      <div class="section-desc">
+        All available API endpoints. API is bound to <code>10.13.13.1:8080</code> (WireGuard interface only).
+      </div>
+    </div>
+    <div class="endpoint-list">
+      <div class="endpoint">
+        <span class="method get">GET</span>
+        <span class="path">/health</span>
+        <span class="desc">Health check: status, total/verified/available proxy counts</span>
+      </div>
+      <div class="endpoint">
+        <span class="method get">GET</span>
+        <span class="path">/api/metrics</span>
+        <span class="desc">JSON metrics: proxy counts, requests, connections, rotations</span>
+      </div>
+      <div class="endpoint">
+        <span class="method get">GET</span>
+        <span class="path">/metrics</span>
+        <span class="desc">Prometheus-format metrics for monitoring (Grafana, etc.)</span>
+      </div>
+      <div class="endpoint">
+        <span class="method get">GET</span>
+        <span class="path">/api/proxies</span>
+        <span class="desc">List active proxies: host, port, protocol, latency, country, success/fail count</span>
+      </div>
+      <div class="endpoint">
+        <span class="method post">POST</span>
+        <span class="path">/api/proxy/add</span>
+        <span class="desc">Add proxy manually. Body: <code>{"host":"...","port":...,"protocol":"http|socks5"}</code></span>
+      </div>
+      <div class="endpoint">
+        <span class="method post">POST</span>
+        <span class="path">/api/proxy/ban/{host:port}</span>
+        <span class="desc">Ban a proxy (remove from active pool, add to banned list)</span>
+      </div>
+      <div class="endpoint">
+        <span class="method post">POST</span>
+        <span class="path">/api/proxy/unban/{host:port}</span>
+        <span class="desc">Unban a proxy (restore from banned list to active pool)</span>
+      </div>
+      <div class="endpoint">
+        <span class="method get">GET</span>
+        <span class="path">/api/network-status</span>
+        <span class="desc">Network info: LAN/WAN IP, UPnP status, WG port, peer count</span>
+      </div>
+      <div class="endpoint">
+        <span class="method get">GET</span>
+        <span class="path">/api/wg/peers</span>
+        <span class="desc">WireGuard peers: name, address, public key, config availability</span>
+      </div>
+      <div class="endpoint">
+        <span class="method get">GET</span>
+        <span class="path">/api/wg/peers/{name}/config</span>
+        <span class="desc">Download WireGuard peer config file (.conf)</span>
+      </div>
+      <div class="endpoint">
+        <span class="method get">GET</span>
+        <span class="path">/api/wg/peers/{name}/qr</span>
+        <span class="desc">Download WireGuard peer QR code (PNG image)</span>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+// State
+let API_URL = localStorage.getItem('vpn-gw-api') || 'http://10.13.13.1:8080';
+let proxyData = [];
+let sortField = 'latency_ms';
+let sortAsc = true;
+let refreshTimer = null;
+
+// Init
+document.getElementById('api-url-input').value = API_URL;
+document.getElementById('api-url-display').textContent = API_URL;
+
+// Tabs
+document.querySelectorAll('.tab').forEach(tab => {
+  tab.addEventListener('click', () => {
+    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+    document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+    tab.classList.add('active');
+    document.getElementById('panel-' + tab.dataset.tab).classList.add('active');
+  });
+});
+
+// API helpers
+async function api(path, opts = {}) {
+  const resp = await fetch(API_URL + path, {
+    ...opts,
+    headers: { 'Content-Type': 'application/json', ...opts.headers },
+  });
+  if (!resp.ok) throw new Error(`${resp.status} ${resp.statusText}`);
+  return path === '/metrics' ? resp.text() : resp.json();
+}
+
+function toast(msg, isError = false) {
+  const el = document.getElementById('toast');
+  el.textContent = msg;
+  el.className = 'toast show' + (isError ? ' error' : '');
+  setTimeout(() => el.className = 'toast', 2500);
+}
+
+function saveApiUrl() {
+  API_URL = document.getElementById('api-url-input').value.replace(/\/+$/, '');
+  localStorage.setItem('vpn-gw-api', API_URL);
+  document.getElementById('api-url-display').textContent = API_URL;
+  toast('API URL saved');
+  refreshAll();
+}
+
+function setAutoRefresh() {
+  if (refreshTimer) clearInterval(refreshTimer);
+  const sec = parseInt(document.getElementById('auto-refresh').value);
+  if (sec > 0) {
+    refreshTimer = setInterval(refreshAll, sec * 1000);
+  }
+}
+
+// Overview
+async function loadOverview() {
+  try {
+    const [health, metrics] = await Promise.all([api('/health'), api('/api/metrics')]);
+    document.getElementById('status-dot').className = 'status-dot' + (health.status === 'ok' ? ' ok' : '');
+    document.getElementById('ov-status').textContent = health.status === 'ok' ? 'OK' : health.status;
+    document.getElementById('ov-status').className = 'value ' + (health.status === 'ok' ? 'green' : 'red');
+    document.getElementById('ov-total').textContent = health.total_proxies;
+    document.getElementById('ov-verified').textContent = health.verified_proxies;
+    document.getElementById('ov-available').textContent = health.available_proxies;
+    document.getElementById('ov-requests').textContent = metrics.total_requests.toLocaleString();
+    document.getElementById('ov-connections').textContent = metrics.active_connections;
+    document.getElementById('ov-rotations').textContent = metrics.proxy_rotations.toLocaleString();
+  } catch (e) {
+    document.getElementById('status-dot').className = 'status-dot';
+    document.getElementById('ov-status').textContent = 'Offline';
+    document.getElementById('ov-status').className = 'value red';
+  }
+
+  // TLS counts from proxy list
+  try {
+    const proxies = await api('/api/proxies');
+    let clean = 0, mitm = 0;
+    proxies.forEach(p => {
+      if (p.tls_clean === true) clean++;
+      else if (p.tls_clean === false) mitm++;
+    });
+    document.getElementById('ov-tls-clean').textContent = clean || '--';
+    document.getElementById('ov-tls-mitm').textContent = mitm || '--';
+  } catch (_) {}
+}
+
+// Proxies
+async function loadProxies() {
+  try {
+    proxyData = await api('/api/proxies');
+    renderProxies();
+  } catch (e) {
+    document.getElementById('proxy-tbody').innerHTML = '<tr><td colspan="7" style="text-align:center;color:var(--text2)">Failed to load</td></tr>';
+  }
+}
+
+function renderProxies() {
+  const q = document.getElementById('proxy-search').value.toLowerCase();
+  let data = proxyData.filter(p =>
+    !q || p.host.includes(q) || (p.country || '').toLowerCase().includes(q) || p.protocol.includes(q)
+  );
+
+  data.sort((a, b) => {
+    let va = a[sortField], vb = b[sortField];
+    if (va == null) va = sortField === 'latency_ms' ? 99999 : '';
+    if (vb == null) vb = sortField === 'latency_ms' ? 99999 : '';
+    if (typeof va === 'string') return sortAsc ? va.localeCompare(vb) : vb.localeCompare(va);
+    return sortAsc ? va - vb : vb - va;
+  });
+
+  const tbody = document.getElementById('proxy-tbody');
+  tbody.innerHTML = data.slice(0, 500).map(p => {
+    const proto = p.protocol === 'socks5' ? '<span class="badge socks5">SOCKS5</span>' : '<span class="badge http">HTTP</span>';
+    const lat = p.latency_ms > 0 ? Math.round(p.latency_ms) + 'ms' : '--';
+    const latColor = p.latency_ms < 500 ? 'var(--green)' : p.latency_ms < 1500 ? 'var(--yellow)' : 'var(--orange)';
+    const country = p.country || '--';
+    const key = p.host + ':' + p.port;
+    return `<tr>
+      <td class="mono">${key}</td>
+      <td>${proto}</td>
+      <td style="color:${latColor}">${lat}</td>
+      <td style="color:var(--green)">${p.success_count}</td>
+      <td style="color:${p.fail_count > 0 ? 'var(--red)' : 'var(--text2)'}">${p.fail_count}</td>
+      <td>${country}</td>
+      <td><button class="danger" style="padding:3px 10px;font-size:11px" onclick="banProxyDirect('${key}')">Ban</button></td>
+    </tr>`;
+  }).join('');
+
+  document.getElementById('proxy-count').textContent = data.length;
+}
+
+function filterProxies() { renderProxies(); }
+
+function sortProxies(field) {
+  if (sortField === field) sortAsc = !sortAsc;
+  else { sortField = field; sortAsc = true; }
+  renderProxies();
+}
+
+// Management
+async function addProxy() {
+  const host = document.getElementById('add-host').value.trim();
+  const port = parseInt(document.getElementById('add-port').value);
+  const protocol = document.getElementById('add-protocol').value;
+  if (!host || !port) return toast('Host and port required', true);
+  try {
+    const r = await api('/api/proxy/add', {
+      method: 'POST',
+      body: JSON.stringify({ host, port, protocol })
+    });
+    toast(r.message, !r.success);
+    if (r.success) { document.getElementById('add-host').value = ''; document.getElementById('add-port').value = ''; }
+  } catch (e) { toast('Error: ' + e.message, true); }
+}
+
+async function banProxy() {
+  const key = document.getElementById('ban-key').value.trim();
+  if (!key) return toast('Proxy key required', true);
+  try {
+    const r = await api('/api/proxy/ban/' + key, { method: 'POST' });
+    toast(r.message, !r.success);
+  } catch (e) { toast('Error: ' + e.message, true); }
+}
+
+async function banProxyDirect(key) {
+  try {
+    const r = await api('/api/proxy/ban/' + key, { method: 'POST' });
+    toast(r.message, !r.success);
+    if (r.success) loadProxies();
+  } catch (e) { toast('Error: ' + e.message, true); }
+}
+
+async function unbanProxy() {
+  const key = document.getElementById('ban-key').value.trim();
+  if (!key) return toast('Proxy key required', true);
+  try {
+    const r = await api('/api/proxy/unban/' + key, { method: 'POST' });
+    toast(r.message, !r.success);
+  } catch (e) { toast('Error: ' + e.message, true); }
+}
+
+// Metrics
+async function loadMetrics() {
+  try {
+    const text = await api('/metrics');
+    document.getElementById('metrics-pre').textContent = text;
+  } catch (e) {
+    document.getElementById('metrics-pre').textContent = 'Error: ' + e.message;
+  }
+}
+
+function copyMetrics() {
+  navigator.clipboard.writeText(document.getElementById('metrics-pre').textContent);
+  toast('Copied');
+}
+
+// WireGuard
+async function loadWireGuard() {
+  try {
+    const peers = await api('/api/wg/peers');
+    const el = document.getElementById('peer-cards');
+    if (!peers.length) {
+      el.innerHTML = '<div class="loading">No peers found in data/wg/</div>';
+      return;
+    }
+    el.innerHTML = peers.map(p => `
+      <div class="peer-card">
+        <div class="peer-name">${p.name}</div>
+        <div class="peer-detail">Address: <span>${p.address || '--'}</span></div>
+        <div class="peer-detail">Public key: <span>${p.public_key ? p.public_key.slice(0, 20) + '...' : '--'}</span></div>
+        <div class="peer-actions">
+          <a href="${API_URL}/api/wg/peers/${p.name}/config" class="secondary" style="background:var(--surface2);border:1px solid var(--border);color:var(--text);border-radius:var(--radius);display:inline-block" download>Download .conf</a>
+          <button class="secondary" onclick="toggleQR('${p.name}')">Show QR</button>
+        </div>
+        <div class="peer-qr" id="qr-${p.name}" style="display:none">
+          <img src="${API_URL}/api/wg/peers/${p.name}/qr" alt="QR ${p.name}" onerror="this.parentElement.innerHTML='<span style=color:var(--text2)>QR not available</span>'">
+        </div>
+      </div>
+    `).join('');
+  } catch (e) {
+    document.getElementById('peer-cards').innerHTML = '<div class="loading">Failed to load: ' + e.message + '</div>';
+  }
+}
+
+function toggleQR(name) {
+  const el = document.getElementById('qr-' + name);
+  el.style.display = el.style.display === 'none' ? 'block' : 'none';
+}
+
+// Refresh all
+async function refreshAll() {
+  await Promise.allSettled([loadOverview(), loadProxies(), loadMetrics(), loadWireGuard()]);
+}
+
+// Init
+refreshAll();
+setAutoRefresh();
+</script>
+
+</body>
+</html>

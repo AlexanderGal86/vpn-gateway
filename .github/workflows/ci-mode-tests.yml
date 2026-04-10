@@ -1,0 +1,16 @@
+name: CI Mode Tests
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+jobs:
+  mode-automation:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run mode automation checks
+        run: ./scripts/test-mode-automation.sh

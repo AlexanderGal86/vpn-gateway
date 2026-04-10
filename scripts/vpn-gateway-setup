@@ -1,0 +1,141 @@
+#!/bin/sh
+# Initial setup for VPN Gateway (native installation)
+# Generates WireGuard config, Unbound config, and client configs
+set -e
+
+BASE_DIR="/var/lib/vpn-gateway"
+DATA_DIR="$BASE_DIR/data"
+
+echo "=========================================="
+echo "  VPN Gateway - Initial Setup"
+echo "=========================================="
+
+if [ "$(id -u)" -ne 0 ]; then
+    echo "Please run as root (sudo)"
+    exit 1
+fi
+
+# Parse arguments
+SERVER_URL="${1:-auto}"
+PEER_COUNT="${2:-2}"
+SERVER_PORT="${3:-51820}"
+
+# Auto-detect server IP
+if [ "$SERVER_URL" = "auto" ]; then
+    OUTIF=$(ip route show default | awk '{print $5}' | head -1)
+    SERVER_URL=$(ip -4 addr show "$OUTIF" | grep -oP '(?<=inet\s)\d+(\.\d+){3}' | head -1)
+    if [ -z "$SERVER_URL" ]; then
+        echo "ERROR: Could not detect server IP. Pass it as first argument:"
+        echo "  vpn-gateway-setup <server-ip> [peer-count] [wg-port]"
+        exit 1
+    fi
+    echo "[*] Auto-detected server IP: $SERVER_URL"
+fi
+
+echo "[*] Server: $SERVER_URL:$SERVER_PORT, Peers: $PEER_COUNT"
+
+# Create directories
+mkdir -p "$DATA_DIR/wg" "$DATA_DIR/unbound"
+
+# Generate WireGuard config
+WG_CONF="$DATA_DIR/wg0.conf"
+if [ -f "$WG_CONF" ]; then
+    echo "[!] WireGuard config already exists at $WG_CONF"
+    printf "    Overwrite? [y/N] "
+    read answer
+    if [ "$answer" != "y" ] && [ "$answer" != "Y" ]; then
+        echo "    Skipping WireGuard config generation"
+        WG_SKIP=1
+    fi
+fi
+
+if [ -z "$WG_SKIP" ]; then
+    echo "[*] Generating WireGuard keys and config..."
+    umask 077
+
+    wg genkey > "$DATA_DIR/wg/server.key"
+    wg pubkey < "$DATA_DIR/wg/server.key" > "$DATA_DIR/wg/server.pub"
+
+    cat > "$WG_CONF" << EOF
+[Interface]
+Address = 10.13.13.1/24
+ListenPort = ${SERVER_PORT}
+PrivateKey = $(cat "$DATA_DIR/wg/server.key")
+
+EOF
+
+    for i in $(seq 1 "$PEER_COUNT"); do
+        mkdir -p "$DATA_DIR/wg/peer${i}"
+        wg genkey > "$DATA_DIR/wg/peer${i}.key"
+        wg pubkey < "$DATA_DIR/wg/peer${i}.key" > "$DATA_DIR/wg/peer${i}.pub"
+        CLIENT_ADDR="10.13.13.$((i+1))"
+
+        cat >> "$WG_CONF" << EOF
+[Peer]
+PublicKey = $(cat "$DATA_DIR/wg/peer${i}.pub")
+AllowedIPs = ${CLIENT_ADDR}/32
+
+EOF
+
+        cat > "$DATA_DIR/wg/peer${i}/peer${i}.conf" << EOF
+[Interface]
+PrivateKey = $(cat "$DATA_DIR/wg/peer${i}.key")
+Address = ${CLIENT_ADDR}/24
+DNS = 10.13.13.1
+
+[Peer]
+PublicKey = $(cat "$DATA_DIR/wg/server.pub")
+Endpoint = ${SERVER_URL}:${SERVER_PORT}
+AllowedIPs = 0.0.0.0/0
+PersistentKeepalive = 25
+EOF
+
+        if command -v qrencode >/dev/null 2>&1; then
+            qrencode -t png -o "$DATA_DIR/wg/peer${i}/peer${i}-qr.png" < "$DATA_DIR/wg/peer${i}/peer${i}.conf"
+        fi
+
+        echo "    Peer $i: $CLIENT_ADDR"
+    done
+fi
+
+# Generate Unbound config
+echo "[*] Configuring Unbound DNS..."
+cat > "$DATA_DIR/unbound/unbound.conf" << EOF
+server:
+    port: 5353
+    interface: 0.0.0.0
+    access-control: 10.13.13.0/24 allow
+    access-control: 127.0.0.0/8 allow
+    hide-identity: yes
+    hide-version: yes
+    use-caps-for-id: yes
+    prefetch: yes
+    prefetch-key: yes
+    minimal-responses: yes
+    qname-minimisation: yes
+
+remote-control:
+    control-enable: no
+EOF
+
+# Enable IP forwarding persistently
+echo "[*] Enabling IP forwarding..."
+sysctl -q -w net.ipv4.ip_forward=1
+echo "net.ipv4.ip_forward=1" > /etc/sysctl.d/99-vpn-gateway.conf
+
+echo ""
+echo "=========================================="
+echo "  Setup complete!"
+echo "=========================================="
+echo ""
+echo "Start the service:"
+echo "  sudo systemctl start vpn-gateway"
+echo ""
+echo "Client configs:"
+for i in $(seq 1 "$PEER_COUNT"); do
+    echo "  $DATA_DIR/wg/peer${i}/peer${i}.conf"
+done
+echo ""
+echo "View QR code:"
+echo "  qrencode -t ansiutf8 < $DATA_DIR/wg/peer1/peer1.conf"
+echo ""

@@ -1,0 +1,8 @@
+target/
+.git/
+*.md
+.env
+.env.lan
+.env.example
+.env.lan.example
+data/
