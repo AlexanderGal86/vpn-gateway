@@ -1,19 +1,28 @@
-# VPN Gateway — single container
-# WireGuard + Unbound DNS + VPN Gateway + iptables
-# network_mode: host for direct network access
+# VPN Gateway — single container deployment
+# WireGuard + Unbound DNS + transparent proxy + iptables
+#
+# Usage:
+#   docker compose up -d
+#
+# On first start, the container will automatically:
+#   - Generate WireGuard server keys and peer configs (data/wg/)
+#   - Create Unbound DNS config (data/unbound/)
+#   - Download GeoIP database (data/GeoLite2-City.mmdb)
+#
+# Client configs and QR codes: data/wg/peer1/peer1.conf, peer1-qr.png
+# Dashboard: http://10.13.13.1:8080  (WireGuard clients or localhost only)
 
 services:
   vpn-gateway:
-    build: .
+    image: ghcr.io/alexandergal86/vpn-gateway:latest
+    pull_policy: always
     container_name: vpn-gateway
     network_mode: host
     cap_add:
       - NET_ADMIN
       - SYS_MODULE
-    entrypoint: ["/entrypoint-simple.sh"]
     volumes:
       - ./data:/app/data
-      - ./config:/app/config:ro
     environment:
       - RUST_LOG=${LOG_LEVEL:-info}
       - WG_SERVER_URL=${WG_SERVER_URL:-auto}

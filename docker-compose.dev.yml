@@ -1,0 +1,12 @@
+# Development override: build image from local source instead of pulling from registry
+#
+# Usage:
+#   docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build -d
+
+services:
+  vpn-gateway:
+    build: .
+    pull_policy: never
+    volumes:
+      - ./data:/app/data
+      - ./config:/app/config:ro
