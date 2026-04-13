@@ -49,6 +49,9 @@ async fn main() -> anyhow::Result<()> {
         config.sticky_session_ttl,
         config.max_proxies,
         config.exclude_countries.clone(),
+        config.warm_pool_max_per_proxy,
+        config.warm_pool_max_proxies,
+        config.warm_pool_max_age_secs,
     );
 
     // Load GeoIP if configured
@@ -186,6 +189,30 @@ async fn main() -> anyhow::Result<()> {
             tracing::debug!("Sticky sessions cleaned up");
         }
     }));
+
+    // Warm pool refresh loop (pre-establish connections to top proxies)
+    if config.enable_warm_pool {
+        let warm_state = state.clone();
+        let warm_refresh = config.warm_pool_refresh_interval;
+        let warm_max_proxies = config.warm_pool_max_proxies;
+        handles.push(tokio::spawn(async move {
+            // Wait for initial health checks to identify good proxies
+            tokio::time::sleep(Duration::from_secs(15)).await;
+            let mut interval = tokio::time::interval(Duration::from_secs(warm_refresh));
+            loop {
+                interval.tick().await;
+                let top = warm_state.top_stable_proxies(warm_max_proxies);
+                warm_state.warm_pool.refresh(&top).await;
+                tracing::debug!("Warm pool refreshed: {} proxies tracked", top.len());
+            }
+        }));
+        tracing::info!(
+            "Warm pool enabled: {} connections to top {} proxies, refresh every {}s",
+            config.warm_pool_max_per_proxy,
+            config.warm_pool_max_proxies,
+            config.warm_pool_refresh_interval
+        );
+    }
 
     // Config reload loop
     let reload_state = state.clone();

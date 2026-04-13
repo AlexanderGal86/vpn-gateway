@@ -15,6 +15,11 @@ pub struct Metrics {
     pub proxies_by_country: HashMap<String, usize>,
     pub success_rate: f64,
     pub circuit_breaker_trips: usize,
+    pub warm_pool_proxies: usize,
+    pub warm_pool_hits: u64,
+    pub warm_pool_misses: u64,
+    pub sticky_sessions_active: usize,
+    pub avg_uptime_secs: f64,
 }
 
 impl Default for Metrics {
@@ -29,6 +34,11 @@ impl Default for Metrics {
             proxies_by_country: HashMap::new(),
             success_rate: 0.0,
             circuit_breaker_trips: 0,
+            warm_pool_proxies: 0,
+            warm_pool_hits: 0,
+            warm_pool_misses: 0,
+            sticky_sessions_active: 0,
+            avg_uptime_secs: 0.0,
         }
     }
 }
@@ -73,6 +83,30 @@ pub fn collect(state: &SharedState) -> Metrics {
         .filter(|p| p.circuit_open_until.is_some())
         .count();
 
+    // Warm pool stats
+    let warm_stats = state.warm_pool.stats();
+
+    // Sticky sessions count
+    let sticky_count = state.sticky_sessions.count();
+
+    // Average uptime of top proxies (verified, with uptime data)
+    let uptime_proxies: Vec<f64> = proxies
+        .iter()
+        .filter(|p| p.is_available() && p.uptime_max_secs > 0)
+        .map(|p| {
+            let current = p
+                .uptime_streak_start
+                .map(|s| s.elapsed().as_secs() as f64)
+                .unwrap_or(0.0);
+            current.max(p.uptime_max_secs as f64)
+        })
+        .collect();
+    let avg_uptime = if !uptime_proxies.is_empty() {
+        uptime_proxies.iter().sum::<f64>() / uptime_proxies.len() as f64
+    } else {
+        0.0
+    };
+
     Metrics {
         proxies_total: total,
         proxies_alive: alive,
@@ -85,6 +119,11 @@ pub fn collect(state: &SharedState) -> Metrics {
         proxies_by_country: by_country,
         success_rate,
         circuit_breaker_trips: circuit_trips,
+        warm_pool_proxies: warm_stats.proxies_tracked,
+        warm_pool_hits: warm_stats.hits,
+        warm_pool_misses: warm_stats.misses,
+        sticky_sessions_active: sticky_count,
+        avg_uptime_secs: avg_uptime,
     }
 }
 
@@ -131,6 +170,29 @@ pub fn format_prometheus(m: &Metrics) -> String {
             country, count
         ));
     }
+
+    lines.push("# HELP vpn_warm_pool_proxies Number of proxies with warm connections".to_string());
+    lines.push("# TYPE vpn_warm_pool_proxies gauge".to_string());
+    lines.push(format!("vpn_warm_pool_proxies {}", m.warm_pool_proxies));
+
+    lines.push("# HELP vpn_warm_pool_hits Warm pool connection hits".to_string());
+    lines.push("# TYPE vpn_warm_pool_hits counter".to_string());
+    lines.push(format!("vpn_warm_pool_hits {}", m.warm_pool_hits));
+
+    lines.push("# HELP vpn_warm_pool_misses Warm pool connection misses".to_string());
+    lines.push("# TYPE vpn_warm_pool_misses counter".to_string());
+    lines.push(format!("vpn_warm_pool_misses {}", m.warm_pool_misses));
+
+    lines.push("# HELP vpn_sticky_sessions_active Active sticky sessions".to_string());
+    lines.push("# TYPE vpn_sticky_sessions_active gauge".to_string());
+    lines.push(format!(
+        "vpn_sticky_sessions_active {}",
+        m.sticky_sessions_active
+    ));
+
+    lines.push("# HELP vpn_avg_uptime_secs Average proxy uptime in seconds".to_string());
+    lines.push("# TYPE vpn_avg_uptime_secs gauge".to_string());
+    lines.push(format!("vpn_avg_uptime_secs {:.0}", m.avg_uptime_secs));
 
     lines.join("\n")
 }

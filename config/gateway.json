@@ -8,5 +8,11 @@
   "source_update_interval": 300,
   "exclude_countries": ["RU"],
   "dns_upstream": "10.13.13.1:5353",
-  "geoip_path": "data/GeoLite2-City.mmdb"
+  "geoip_path": "data/GeoLite2-City.mmdb",
+  "enable_sticky_sessions": true,
+  "sticky_session_ttl": 600,
+  "enable_warm_pool": true,
+  "warm_pool_max_per_proxy": 2,
+  "warm_pool_max_proxies": 5,
+  "warm_pool_refresh_interval": 20
 }

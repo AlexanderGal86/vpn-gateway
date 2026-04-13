@@ -121,14 +121,23 @@ async fn handle_connection(mut client: TcpStream, peer: SocketAddr, state: Share
     }
 
     for attempt in 0..max_retries {
-        // Clear sticky key after first failure to avoid retrying dead proxy
+        // After first failure: try backup proxy, then fresh selection
         if attempt > 0 {
             selected_proxy_key = None;
         }
 
-        // Get proxy - either sticky or fresh selection
+        // Get proxy - sticky → backup → fresh selection
         let proxy = if let Some(ref key) = selected_proxy_key {
             state.proxies.get(key).map(|p| p.value().clone())
+        } else if attempt == 1 {
+            // On first retry, try the backup proxy before fresh selection
+            if let Some(backup_key) = state.sticky_sessions.get_backup(&peer) {
+                state.proxies.get(&backup_key).map(|p| p.value().clone())
+            } else if is_https {
+                state.select_best_for_tls()
+            } else {
+                state.select_best()
+            }
         } else if is_https {
             state.select_best_for_tls()
         } else {
@@ -160,15 +169,26 @@ async fn handle_connection(mut client: TcpStream, peer: SocketAddr, state: Share
 
         let proxy_key = proxy.key();
 
-        // Step 4: Connect through upstream proxy
+        // Step 4: Connect through upstream proxy (try warm pool first)
         let start = std::time::Instant::now();
-        match upstream::connect_to_target(&proxy, &target_host, target_port).await {
+        let connect_result = if let Some(warm_stream) = state.warm_pool.take(&proxy_key).await {
+            tracing::debug!(
+                "{} -> {} via {} (warm pool hit)",
+                peer,
+                target_host,
+                proxy_key
+            );
+            upstream::handshake_on_stream(warm_stream, &proxy, &target_host, target_port).await
+        } else {
+            upstream::connect_to_target(&proxy, &target_host, target_port).await
+        };
+        match connect_result {
             Ok(mut upstream) => {
                 let latency = start.elapsed().as_millis() as f64;
                 state.record_success(&proxy_key, latency);
 
-                // Set sticky session on success
-                state.sticky_sessions.set(peer, proxy_key.clone());
+                // Set/touch sticky session on success
+                state.sticky_sessions.set_or_touch(peer, proxy_key.clone());
                 tracing::debug!(
                     "{} -> {} via {} ({}ms) [sticky]",
                     peer,

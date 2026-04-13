@@ -1,8 +1,24 @@
 use crate::pool::proxy::{Protocol, Proxy};
 use anyhow::{anyhow, Result};
+use socket2::SockRef;
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
+
+/// Set TCP keepalive on an upstream proxy connection.
+///
+/// Probing starts after `idle_secs` of silence, then retries every
+/// `interval_secs`. With default kernel retries (~3), a dead connection
+/// is detected in approximately `idle_secs + interval_secs * 3`.
+fn set_tcp_keepalive(stream: &TcpStream, idle_secs: u64, interval_secs: u64) {
+    let sock_ref = SockRef::from(stream);
+    let keepalive = socket2::TcpKeepalive::new()
+        .with_time(Duration::from_secs(idle_secs))
+        .with_interval(Duration::from_secs(interval_secs));
+    if let Err(e) = sock_ref.set_tcp_keepalive(&keepalive) {
+        tracing::debug!("Failed to set TCP keepalive: {}", e);
+    }
+}
 
 /// Connect to target through an upstream proxy, performing the correct
 /// protocol handshake (HTTP CONNECT or SOCKS5).
@@ -20,6 +36,9 @@ pub async fn connect_through_proxy(
         .await
         .map_err(|_| anyhow!("TCP connect to proxy {} timed out", proxy.addr()))?
         .map_err(|e| anyhow!("TCP connect to proxy {} failed: {}", proxy.addr(), e))?;
+
+    // Enable TCP keepalive: detect dead connections in ~75s (30 + 15*3)
+    set_tcp_keepalive(&stream, 30, 15);
 
     // Step 2: Protocol-specific handshake
     match proxy.protocol {
@@ -204,6 +223,26 @@ pub async fn connect_to_target(
     port: u16,
 ) -> Result<TcpStream> {
     connect_through_proxy(proxy, target, port, Duration::from_secs(10)).await
+}
+
+/// Perform protocol handshake on an already-established TcpStream.
+///
+/// Used by the warm pool: the TCP connection is pre-established,
+/// so we only need to do the CONNECT/SOCKS5 handshake (saving ~50-200ms).
+pub async fn handshake_on_stream(
+    stream: TcpStream,
+    proxy: &Proxy,
+    target: &str,
+    port: u16,
+) -> Result<TcpStream> {
+    tokio::time::timeout(Duration::from_secs(10), async {
+        match proxy.protocol {
+            Protocol::Http | Protocol::Https => http_connect_handshake(stream, target, port).await,
+            Protocol::Socks5 => socks5_handshake(stream, target, port).await,
+        }
+    })
+    .await
+    .map_err(|_| anyhow!("Handshake on warm connection timed out"))?
 }
 
 #[cfg(test)]

@@ -58,12 +58,20 @@ pub struct Proxy {
     #[serde(default)]
     pub tls_clean: Option<bool>,
 
+    // === Stability tracking (persisted) ===
+    /// Longest continuous uptime streak observed, in seconds
+    #[serde(default)]
+    pub uptime_max_secs: u64,
+
     // === Runtime-only (skip serialization) ===
     #[serde(skip)]
     pub status: Option<ProxyStatus>,
     /// Instant when circuit breaker disables this proxy (runtime only)
     #[serde(skip)]
     pub circuit_open_until: Option<Instant>,
+    /// When the current uptime streak started (runtime only, resets on restart)
+    #[serde(skip)]
+    pub uptime_streak_start: Option<Instant>,
 }
 
 impl Proxy {
@@ -83,8 +91,10 @@ impl Proxy {
             manual: false,
             priority_boost: 0.0,
             tls_clean: None,
+            uptime_max_secs: 0,
             status: Some(ProxyStatus::Unchecked),
             circuit_open_until: None,
+            uptime_streak_start: None,
         }
     }
 
@@ -102,6 +112,16 @@ impl Proxy {
         };
         self.latency_ewma = self.latency_ewma * 0.8 + latency_ms * 0.2;
         self.success_count += 1;
+
+        // Track uptime streak for stability scoring
+        if self.consecutive_fails > 0 || self.uptime_streak_start.is_none() {
+            // Recovery from failure or first success: start new streak
+            self.uptime_streak_start = Some(Instant::now());
+        } else if let Some(start) = self.uptime_streak_start {
+            // Ongoing streak: update max observed uptime
+            self.uptime_max_secs = self.uptime_max_secs.max(start.elapsed().as_secs());
+        }
+
         self.consecutive_fails = 0;
         self.last_success = Some(Utc::now());
         self.last_check = Some(Utc::now());
@@ -115,6 +135,7 @@ impl Proxy {
         self.consecutive_fails += 1;
         self.last_fail = Some(Utc::now());
         self.last_check = Some(Utc::now());
+        self.uptime_streak_start = None; // streak broken
 
         // Circuit breaker: escalating disable duration
         let disable_secs = match self.consecutive_fails {
@@ -159,6 +180,19 @@ impl Proxy {
             if age_secs < 300.0 {
                 s -= 100.0; // recently worked = bonus
             }
+        }
+
+        // Stability bonus: up to -500 for proxies with long uptime streaks.
+        // A proxy with 400ms latency and 2h uptime beats a 100ms proxy with no history.
+        let current_uptime = self
+            .uptime_streak_start
+            .map(|start| start.elapsed().as_secs() as f64)
+            .unwrap_or(0.0);
+        let uptime = current_uptime.max(self.uptime_max_secs as f64);
+        if uptime > 300.0 {
+            // Linear ramp: 5min → -50, 60min → -500
+            let bonus = ((uptime - 300.0) / 3300.0 * 450.0 + 50.0).min(500.0);
+            s -= bonus;
         }
 
         s
@@ -348,5 +382,104 @@ mod tests {
     fn test_protocol_display() {
         assert_eq!(format!("{:?}", Protocol::Http), "Http");
         assert_eq!(format!("{:?}", Protocol::Socks5), "Socks5");
+    }
+
+    #[test]
+    fn test_stability_bonus_in_score() {
+        let mut stable = Proxy::new("1.2.3.4".into(), 8080, Protocol::Http);
+        let mut fresh = Proxy::new("5.6.7.8".into(), 8080, Protocol::Http);
+
+        // Both have similar latency
+        stable.record_success(200.0);
+        fresh.record_success(200.0);
+
+        // Simulate stable proxy with long uptime history
+        stable.uptime_max_secs = 3600; // 1 hour
+
+        let stable_score = stable.score();
+        let fresh_score = fresh.score();
+        assert!(
+            stable_score < fresh_score,
+            "Stable proxy (score={}) should beat fresh proxy (score={})",
+            stable_score,
+            fresh_score
+        );
+    }
+
+    #[test]
+    fn test_uptime_streak_starts_on_success() {
+        let mut p = Proxy::new("1.2.3.4".into(), 8080, Protocol::Http);
+        assert!(p.uptime_streak_start.is_none());
+
+        p.record_success(100.0);
+        assert!(
+            p.uptime_streak_start.is_some(),
+            "Streak should start on first success"
+        );
+    }
+
+    #[test]
+    fn test_uptime_streak_resets_on_fail() {
+        let mut p = Proxy::new("1.2.3.4".into(), 8080, Protocol::Http);
+        p.record_success(100.0);
+        assert!(p.uptime_streak_start.is_some());
+
+        p.record_fail();
+        assert!(
+            p.uptime_streak_start.is_none(),
+            "Streak should reset on failure"
+        );
+    }
+
+    #[test]
+    fn test_uptime_max_persists_across_failures() {
+        let mut p = Proxy::new("1.2.3.4".into(), 8080, Protocol::Http);
+        p.uptime_max_secs = 600; // had a 10-min streak before
+
+        p.record_fail();
+        assert_eq!(p.uptime_max_secs, 600, "Max uptime should survive failures");
+
+        // Score should still benefit from historical uptime
+        p.record_success(200.0);
+        let score = p.score();
+        let mut no_history = Proxy::new("5.6.7.8".into(), 8080, Protocol::Http);
+        no_history.record_success(200.0);
+        assert!(
+            score < no_history.score(),
+            "Proxy with uptime history should have lower score"
+        );
+    }
+
+    #[test]
+    fn test_stability_bonus_caps_at_500() {
+        let mut p = Proxy::new("1.2.3.4".into(), 8080, Protocol::Http);
+        p.record_success(200.0);
+        p.uptime_max_secs = 86400; // 24 hours
+
+        let mut base = Proxy::new("5.6.7.8".into(), 8080, Protocol::Http);
+        base.record_success(200.0);
+
+        let diff = base.score() - p.score();
+        assert!(
+            (diff - 500.0).abs() < 1.0,
+            "Stability bonus should cap at 500, got diff={}",
+            diff
+        );
+    }
+
+    #[test]
+    fn test_serialization_roundtrip_with_uptime() {
+        let mut p = Proxy::new("1.2.3.4".into(), 8080, Protocol::Socks5);
+        p.record_success(150.0);
+        p.uptime_max_secs = 3600;
+
+        let json = serde_json::to_string(&p).unwrap();
+        let p2: Proxy = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(p2.uptime_max_secs, 3600);
+        assert!(
+            p2.uptime_streak_start.is_none(),
+            "Runtime field should not be serialized"
+        );
     }
 }
