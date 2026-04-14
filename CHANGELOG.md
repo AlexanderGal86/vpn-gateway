@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.1.0](https://github.com/AlexanderGal86/vpn-gateway/compare/vpn-gateway-v1.0.8...vpn-gateway-v1.1.0) (2026-04-14)
+
+
+### Features
+
+* server connection pooling for stable proxy connections ([#53](https://github.com/AlexanderGal86/vpn-gateway/issues/53)) ([6d90cba](https://github.com/AlexanderGal86/vpn-gateway/commit/6d90cba86d20f9b59b041a90346cd50a1903ae71))
+
 ## [1.0.8](https://github.com/AlexanderGal86/vpn-gateway/compare/vpn-gateway-v1.0.7...vpn-gateway-v1.0.8) (2026-04-10)
 
 
