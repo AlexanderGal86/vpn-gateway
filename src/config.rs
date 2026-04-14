@@ -63,6 +63,22 @@ pub struct Config {
 
     #[serde(default = "default_api_bind")]
     pub api_bind: String,
+
+    // === Warm Pool ===
+    #[serde(default)]
+    pub enable_warm_pool: bool,
+
+    #[serde(default = "default_warm_pool_max_per_proxy")]
+    pub warm_pool_max_per_proxy: usize,
+
+    #[serde(default = "default_warm_pool_max_proxies")]
+    pub warm_pool_max_proxies: usize,
+
+    #[serde(default = "default_warm_pool_refresh_interval")]
+    pub warm_pool_refresh_interval: u64,
+
+    #[serde(default = "default_warm_pool_max_age_secs")]
+    pub warm_pool_max_age_secs: u64,
 }
 
 fn default_gateway_port() -> u16 {
@@ -107,6 +123,18 @@ fn default_sticky_session_ttl() -> u64 {
 fn default_api_bind() -> String {
     "10.13.13.1".to_string()
 }
+fn default_warm_pool_max_per_proxy() -> usize {
+    2
+}
+fn default_warm_pool_max_proxies() -> usize {
+    5
+}
+fn default_warm_pool_refresh_interval() -> u64 {
+    20
+}
+fn default_warm_pool_max_age_secs() -> u64 {
+    45
+}
 
 impl Default for Config {
     fn default() -> Self {
@@ -130,6 +158,11 @@ impl Default for Config {
             enable_sticky_sessions: false,
             dns_upstream: default_dns_upstream(),
             api_bind: default_api_bind(),
+            enable_warm_pool: false,
+            warm_pool_max_per_proxy: default_warm_pool_max_per_proxy(),
+            warm_pool_max_proxies: default_warm_pool_max_proxies(),
+            warm_pool_refresh_interval: default_warm_pool_refresh_interval(),
+            warm_pool_max_age_secs: default_warm_pool_max_age_secs(),
         }
     }
 }

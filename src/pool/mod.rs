@@ -7,3 +7,4 @@ pub mod proxy;
 pub mod source_manager;
 pub mod state;
 pub mod sticky_sessions;
+pub mod warm_pool;

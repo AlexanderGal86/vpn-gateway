@@ -1,5 +1,6 @@
 use crate::pool::proxy::{Proxy, ProxyStatus};
 use crate::pool::sticky_sessions::StickySessionManager;
+use crate::pool::warm_pool::WarmPool;
 use chrono::Utc;
 use dashmap::DashMap;
 use rand::distr::{weighted::WeightedIndex, Distribution};
@@ -110,6 +111,9 @@ pub struct SharedState {
 
     // === Excluded countries (e.g., RU for Russia) ===
     pub exclude_countries: Arc<std::sync::RwLock<Vec<String>>>,
+
+    // === Warm Pool (pre-established connections to top proxies) ===
+    pub warm_pool: Arc<WarmPool>,
 }
 
 impl SharedState {
@@ -127,6 +131,7 @@ impl SharedState {
             max_proxies: Arc::new(AtomicUsize::new(5000)),
             geo_index: GeoIndex::new(),
             exclude_countries: Arc::new(std::sync::RwLock::new(Vec::new())),
+            warm_pool: Arc::new(WarmPool::new(2, 5, 45)),
         }
     }
 
@@ -135,6 +140,9 @@ impl SharedState {
         sticky_ttl_secs: u64,
         max_proxies: usize,
         exclude_countries: Vec<String>,
+        warm_pool_max_per_proxy: usize,
+        warm_pool_max_proxies: usize,
+        warm_pool_max_age_secs: u64,
     ) -> Self {
         let geoip = match geoip_path {
             // Note: load() should be called separately as it's async
@@ -155,6 +163,11 @@ impl SharedState {
             max_proxies: Arc::new(AtomicUsize::new(max_proxies)),
             geo_index: GeoIndex::new(),
             exclude_countries: Arc::new(std::sync::RwLock::new(exclude_countries)),
+            warm_pool: Arc::new(WarmPool::new(
+                warm_pool_max_per_proxy,
+                warm_pool_max_proxies,
+                warm_pool_max_age_secs,
+            )),
         }
     }
 
@@ -390,6 +403,64 @@ impl SharedState {
         // Fallback: any available proxy (better MITM than nothing)
         tracing::warn!("No TLS-clean proxies available, falling back to unverified");
         self.select_best()
+    }
+
+    /// Get the top N stable proxies for warm pool refresh.
+    ///
+    /// Returns (proxy_key, proxy_addr) pairs sorted by score.
+    /// Only includes Verified, available proxies not in excluded countries.
+    pub fn top_stable_proxies(&self, n: usize) -> Vec<(String, String)> {
+        let excluded: Vec<String> = self
+            .exclude_countries
+            .read()
+            .ok()
+            .map(|g| g.clone())
+            .unwrap_or_default();
+
+        let top = self.collect_top_n_sized(n, |p| {
+            p.is_available()
+                && matches!(&p.status, Some(ProxyStatus::Verified))
+                && !excluded
+                    .iter()
+                    .any(|c| p.country.as_ref().map(|pc| pc == c).unwrap_or(false))
+        });
+
+        top.into_iter().map(|p| (p.key(), p.addr())).collect()
+    }
+
+    /// Like collect_top_n but with configurable size.
+    fn collect_top_n_sized(&self, n: usize, filter: impl Fn(&Proxy) -> bool) -> Vec<Proxy> {
+        let mut top: Vec<(f64, Proxy)> = Vec::with_capacity(n);
+        let mut worst_score = f64::MAX;
+
+        for entry in self.proxies.iter() {
+            let p = entry.value();
+            if !filter(p) {
+                continue;
+            }
+            let score = p.score();
+            if top.len() < n {
+                top.push((score, p.clone()));
+                if top.len() == n {
+                    worst_score = top.iter().map(|(s, _)| *s).fold(f64::MIN, f64::max);
+                }
+            } else if score < worst_score {
+                if let Some(idx) = top
+                    .iter()
+                    .enumerate()
+                    .max_by(|(_, a), (_, b)| {
+                        a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal)
+                    })
+                    .map(|(i, _)| i)
+                {
+                    top[idx] = (score, p.clone());
+                    worst_score = top.iter().map(|(s, _)| *s).fold(f64::MIN, f64::max);
+                }
+            }
+        }
+
+        top.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+        top.into_iter().map(|(_, p)| p).collect()
     }
 
     // === Counts ===
