@@ -1,0 +1,763 @@
+wget https://github.com/AlexanderGal86/vpn-gateway/releases/download/v1.0.8/vpn-gateway-linux-x86_64
+
+
+Agent
+Explore connection handling and proxy selection
+Perfect! I've read all four files thoroughly. Let me compile a comprehensive analysis of the connection handling flow in this VPN gateway.
+## Connection Handling Flow Analysis
+Show less
+### 1. **CLIENT CONNECTION ACCEPTANCE (transparent.rs)**
+When a client connects to port :1080:
+- **SO_ORIGINAL_DST extraction**: The transparent proxy retrieves the original destination IP/port via Linux `SO_ORIGINAL_DST` socket option (lines 16-41)
+- **Peek & Sniff**: The first 4096 bytes are peeked (non-consuming) to extract SNI/Host header for domain name detection (lines 64-90)
+- **Metrics tracking**: `total_requests` and `active_connections` atomic counters are incremented (lines 93-98)
+- **Connection limit enforcement**: A semaphore limits concurrent connections; excess connections are immediately dropped (lines 240-261)
+### 2. **PROXY SELECTION WITH RETRY LOGIC (transparent.rs lines 92-159)**
+The system implements **3 retry attempts** with automatic failover:
+**First attempt (attempt = 0):**
+- Checks sticky sessions: if the client IP has a cached proxy affinity, it tries that proxy first
+- For HTTPS (port 443): only uses sticky proxy if `tls_clean == Some(true)` flag is set (lines 110-115)
+- Falls back to fresh selection if sticky proxy is unavailable
+**Retry attempts (attempt > 0):**
+- **Clears sticky session key** to avoid retrying a dead proxy (line 126)
+- Selects fresh proxy: calls `select_best_for_tls()` for HTTPS or `select_best()` for HTTP
+**Proxy unavailability handling (lines 141-158):**
+- If NO proxies available at all: waits up to 10 seconds for `first_ready` notification signal
+- If still no proxies after timeout: logs error and breaks (connection fails)
+### 3. **UPSTREAM PROXY CONNECTION (upstream.rs)**
+The `connect_to_target()` function establishes the tunnel with a **10-second timeout** (line 206):
+**HTTP CONNECT Protocol** (lines 37-85):
+- Sends: `CONNECT target:port HTTP/1.1\r\n...`
+- Reads response until finding `\r\n\r\n` (header terminator)
+- Parses HTTP status code: only accepts 200 (connection established)
+- Returns error for status codes like 403, 407, etc.
+- Handles connection closed before response, response too large (>1KB), and timeout scenarios
+**SOCKS5 Protocol** (lines 98-195):
+- Greeting: client sends `VER=5, NMETHODS=1, METHOD=0` → server responds with selected method
+- Connection request: client sends CONNECT command with domain name
+- Response validation: checks REP byte for success (0x00) or error codes (0x01-0x08)
+- Reads and discards bind address/port (ATYP=1/3/4 for IPv4/domain/IPv6)
+- Errors include: wrong version, no acceptable auth, network/host/connection errors
+### 4. **FAILURE HANDLING & METRICS (transparent.rs lines 206-218)**
+When `connect_to_target()` fails:
+- `record_fail(&proxy_key)` is called (degrades proxy rating)
+- Debug log records the attempt number
+- Loop continues to next retry attempt with a different proxy
+- **No delay between retries** (immediate retry)
+### 5. **BIDIRECTIONAL RELAY WITH TIMEOUT (transparent.rs lines 180-199)**
+Upon successful upstream connection:
+- **Sticky session set**: records proxy affinity for this client IP (line 171)
+- **Idle timeout: 300 seconds** (5 minutes) on bidirectional copy
+- Timeout/error scenarios:
+  - `Ok(Ok((down, up)))`: transfer completed, logs bytes transferred
+  - `Ok(Err(e))`: relay I/O error (client or upstream dropped), logs error
+  - `Err(_)`: idle timeout reached (5 min inactivity)
+- **Active connection counter decremented** when exiting (lines 201-203)
+- **Function returns** (success case) — connection cleanup happens via permit drop (line 264)
+### 6. **STICKY SESSIONS IMPLEMENTATION (sticky_sessions.rs)**
+A DashMap-based affinity system with:
+**Default TTL: 300 seconds** (line 8, configurable via `with_ttl()`)
+**Session lifecycle:**
+- `set()`: Creates/updates session with `created_at` and `last_access` timestamps (lines 55-67)
+- `get()`: Returns proxy key if session exists AND `last_access < now - TTL` (lines 43-52)
+  - **Missing: Does NOT update `last_access` on read** — only creation time is checked
+  - Expired sessions are removed on access attempt
+- `touch()`: Updates `last_access` (lines 71-75) — **unused in main code**
+- `cleanup()`: Periodic cleanup removes expired sessions (lines 83-88)
+**Critical insight**: A session's TTL is based on its **creation time**, not access time. So after 300 seconds, a sticky session expires regardless of how recently the client used it.
+### 7. **CONNECTION POOL IMPLEMENTATION (connection_pool.rs)**
+**Currently unused** in the main transparent proxy code, but exists for future pooling:
+**Configuration:**
+- `MAX_IDLE_SECS = 30` (connections dropped after 30s idle)
+- `MAX_PER_PROXY = 5` (max 5 persistent connections per proxy)
+**Operations:**
+- `get()`: Pops candidate connections, checks liveness with `peek()` call (100ms timeout), returns if alive
+- `put()`: Stores returned connections under lock if pool not full
+- `is_connection_alive()`: Non-blocking peek check (tests for socket errors)
+- Stale cleanup removes connections older than `max_idle` duration
+**Note**: This pool is defined but NOT integrated into the transparent proxy's flow — connections are not reused between requests.
+### 8. **FAILURE SCENARIOS - Complete Error Paths**
+| Scenario | What Happens | Retry? |
+|----------|-------------|--------|
+| No proxies available | Waits 10s for first proxy, fails if none appear | No (logs error) |
+| Proxy TCP connect times out | Error logged, sticky key cleared | Yes (attempt+1) |
+| HTTP CONNECT returns non-200 | Error logged with status code, sticky key cleared | Yes |
+| SOCKS5 handshake fails | Error logged with specific reason, sticky key cleared | Yes |
+| Upstream connection closes mid-relay | Relay I/O error logged | No (connection ends) |
+| Relay idle timeout (300s) | Connection closed after timeout | No (connection ends) |
+| Client closes connection | `copy_bidirectional` returns Err, logged | No |
+---
+## Key Findings
+**Mid-stream proxy failure**: Once the bidirectional relay (`copy_bidirectional`) is established, there is **NO automatic failover**. If the upstream proxy closes the connection mid-stream, the client sees the connection drop. The next request from the client will go through the full retry-with-failover logic again.
+**Sticky session behavior**: A client IP locks to a proxy for 300 seconds from first successful use. If that sticky proxy fails on the first attempt, it's immediately abandoned for that request, but the sticky mapping remains. The next request might try it again (if TTL hasn't expired).
+**Retry scope**: Only applies to **initial connection establishment** (TCP connect + handshake). Once data is flowing, no retry mechanism exists.
+**Connection pooling**: Defined but completely disabled — all upstream connections are fresh (not pooled).
+Agent
+Explore proxy pool state and selection
+Perfect! Now let me create a comprehensive report based on all the thorough exploration:
+## Complete Proxy Lifecycle & Selection Report
+Show less
+I've thoroughly analyzed all the proxy selection and health checking code in this VPN gateway. Here's the complete picture:
+---
+### 1. PROXY SELECTION: `select_best()` WITH THREE-TIER HIERARCHY
+**Location:** `/home/user/vpn-gateway/src/pool/state.rs` lines 172-215
+The proxy selection uses a **3-tier priority system** with weighted random selection within each tier:
+#### **Tier 1: Verified Proxies (Highest Priority)**
+- Status: `ProxyStatus::Verified`
+- Criteria: Available, recently checked & working
+- Selection: Top 10 by lowest score, then weighted random
+#### **Tier 2: PresumedAlive (Medium Priority)**
+- Status: `ProxyStatus::PresumedAlive`
+- Criteria: Loaded from state.json, last successful within 1 hour
+- Selection: Top 10 by lowest score, then weighted random
+- **Note:** When proxies are loaded from persistent state, if they succeeded within the last hour, they're marked PresumedAlive to avoid re-checking everything on startup
+#### **Tier 3: Unchecked (Fallback)**
+- Status: `ProxyStatus::Unchecked` or `None`
+- Criteria: Never checked before
+- Selection: Simple iteration (no scoring yet, since latency unknown)
+**Key Detail:** Selection stops at first non-empty tier. If Tier 1 has proxies, Tier 2 & 3 are ignored entirely.
+---
+### 2. SCORING MECHANISM: `score()` (Lower = Better)
+**Location:** `/home/user/vpn-gateway/src/pool/proxy.rs` lines 146-165
+```rust
+score = latency_ewma 
+        + (consecutive_fails × 50.0)    // Penalty for failures
+        - priority_boost                 // Bonus for manual proxies
+        - (recent_success ? 100.0 : 0)   // Bonus if worked in last 5 min
+```
+**Scoring Components:**
+- **Base:** EWMA latency (dominant factor)
+- **Failure Penalty:** +50 per consecutive fail (prevents repeated use of failing proxies)
+- **Success Bonus:** -100 if succeeded within last 5 minutes (gives recently-working proxies a boost)
+- **Manual Proxy Bonus:** `-priority_boost` (manual proxies are preferred)
+---
+### 3. EWMA LATENCY SCORING (Exponential Weighted Moving Average)
+**Location:** `/home/user/vpn-gateway/src/pool/proxy.rs` lines 96-110
+```rust
+pub fn record_success(&mut self, latency_ms: f64) {
+    // Clamp to [0, 60000ms], default to 5000ms for invalid values
+    let latency_ms = if latency_ms.is_finite() {
+        latency_ms.clamp(0.0, 60_000.0)
+    } else {
+        5000.0
+    };
+    
+    // EWMA formula with α = 0.2 (20% new data, 80% old data)
+    self.latency_ewma = self.latency_ewma * 0.8 + latency_ms * 0.2;
+    
+    // Reset consecutive fails on success
+    self.consecutive_fails = 0;
+    self.status = Some(ProxyStatus::Verified);
+    self.circuit_open_until = None; // Clear circuit breaker
+}
+```
+**Key Points:**
+- **α = 0.2:** New measurements have 20% weight; older data decays exponentially
+- **Convergence:** After ~10 successful checks, EWMA converges toward actual latency
+- **Initial Value:** 5000ms (pessimistic; quick to improve with successful checks)
+- **Clamping:** Protects against NaN/Infinity; max 60s (60,000ms)
+- **Reset on Success:** Consecutive fail counter resets to 0, immediately clearing circuit breaker
+---
+### 4. CIRCUIT BREAKER: ESCALATING FAILURE HANDLING
+**Location:** `/home/user/vpn-gateway/src/pool/proxy.rs` lines 113-136
+The circuit breaker uses **escalating disable durations** based on consecutive failures:
+| Consecutive Fails | Action | Duration |
+|------------------|--------|----------|
+| 1-4 | No action | 0s (still available) |
+| 5-9 | **Circuit opens** | 60s disable |
+| 10-19 | Escalate | 300s (5 min) disable |
+| 20-49 | Escalate | 3600s (60 min) disable |
+| 50+ | **Permanent failure** | Until source refresh |
+**Mechanics:**
+```rust
+pub fn record_fail(&mut self) {
+    self.fail_count += 1;
+    self.consecutive_fails += 1;
+    
+    let disable_secs = match self.consecutive_fails {
+        0..=4 => 0,          // No action yet
+        5..=9 => 60,         // 1 minute
+        10..=19 => 300,      // 5 minutes
+        20..=49 => 3600,     // 60 minutes
+        _ => {
+            self.status = Some(ProxyStatus::Failed);  // Permanent
+            return;
+        }
+    };
+    
+    if disable_secs > 0 {
+        self.circuit_open_until = Some(Instant::now() + Duration::from_secs(disable_secs));
+        self.status = Some(ProxyStatus::Failed);
+    }
+}
+```
+**Availability Check:**
+```rust
+pub fn is_available(&self) -> bool {
+    match self.circuit_open_until {
+        Some(until) => Instant::now() >= until,  // True if circuit expired
+        None => true,                              // True if never opened
+    }
+}
+```
+**Recovery Path:**
+- **Automatic:** Circuit expires after duration → becomes available again
+- **Manual:** A successful check immediately clears `circuit_open_until` and resets `consecutive_fails` to 0
+- **Permanent Recovery:** After 50+ fails, only a source refresh can reinject the proxy
+---
+### 5. THREE-STAGE HEALTH CHECK FLOW
+**Location:** `/home/user/vpn-gateway/src/pool/health_checker.rs` lines 267-292
+The health check runs **three sequential stages** for each proxy:
+#### **Stage 1: TCP Connect Check (Fast Filter)**
+- **What:** `TcpStream::connect(proxy.addr())`
+- **Purpose:** Eliminate obviously dead proxies
+- **Timeout:** Configurable (default 5000ms)
+- **Result:** If fails → proxy is `Dead`
+- **If succeeds:** Continue to Stage 2
+#### **Stage 2: HTTP CONNECT Handshake (Verification)**
+- **What:** Send CONNECT request to cloudflare.com:80 through proxy
+- **Purpose:** Verify proxy actually works for tunneling
+- **Request:** 
+  ```
+  CONNECT cloudflare.com:80 HTTP/1.1
+  Host: cloudflare.com:80
+  ```
+- **Expected Response:** `HTTP/1.1 200` or `HTTP/1.0 200`
+- **Timeout:** 5000ms per operation
+- **Result:** If fails → proxy is `Dead`
+- **If succeeds:** Record latency, continue to Stage 3
+#### **Stage 3: TLS Validation (MITM Detection)**
+- **What:** Perform full TLS handshake with certificate validation through the proxy tunnel
+- **Target:** cloudflare.com:443
+- **Validation:** Uses `rustls` + webpki standard roots
+- **Purpose:** Detect if proxy is performing MITM (certificate tampering)
+- **Result:**
+  - **Valid cert** → `CheckResult::Ok` - Set `tls_clean = true`
+  - **Invalid cert** → `CheckResult::OkNoTls` - Set `tls_clean = false` (MITM proxy)
+  - **Timeout/Error** → `CheckResult::OkNoTls` - Mark as unverified TLS
+**CheckResult Enum:**
+```rust
+enum CheckResult {
+    Ok(f64),           // TCP + CONNECT + TLS valid
+    OkNoTls(f64),      // TCP + CONNECT ok, but TLS failed/MITM
+    Dead,              // TCP or CONNECT failed
+}
+```
+---
+### 6. HEALTH CHECK SCHEDULING & FREQUENCY
+**Location:** `/home/user/vpn-gateway/src/pool/health_checker.rs` lines 410-441
+The `run_health_loop()` function adapts check frequency based on proxy status:
+```rust
+pub async fn run_health_loop(state: SharedState) {
+    let mut fast_interval = tokio::time::interval(Duration::from_secs(5));
+    let mut normal_interval = tokio::time::interval(Duration::from_secs(30));
+    
+    loop {
+        tokio::select! {
+            _ = fast_interval.tick() => {
+                // Every 5 seconds: check proxies needing urgent verification
+                let batch = state.proxies_needing_check(100);
+                if !batch.is_empty() {
+                    fast_probe(&state, batch, 5000).await;
+                }
+            }
+            _ = normal_interval.tick() => {
+                // Every 30 seconds: check lower-priority proxies + metrics
+                let batch = state.proxies_needing_check(50);
+                if !batch.is_empty() {
+                    fast_probe(&state, batch, 5000).await;
+                }
+                // Log pool status
+            }
+        }
+    }
+}
+```
+**Check Frequency by Proxy Status** (via `proxies_needing_check()`):
+| Status | Priority | Condition | Frequency |
+|--------|----------|-----------|-----------|
+| **Unchecked** | 0 (Highest) | Never checked before | Immediate (fast loop) |
+| **PresumedAlive** | 1 | From state.json, needs verification | Immediate (fast loop) |
+| **Verified** | 2 | Checked successfully, stale | Immediate if >60s old |
+| **Failed/Circuit** | 3 | Circuit breaker expired | Immediate (lower priority) |
+**Batching:**
+- Fast loop: Up to 100 proxies per tick (every 5s)
+- Normal loop: Up to 50 proxies per tick (every 30s)
+- **Total throughput:** Could verify ~1200-1800 proxies/minute in steady state
+---
+### 7. STATE TRANSITIONS & PROXY LIFECYCLE
+**Location:** `/home/user/vpn-gateway/src/pool/proxy.rs` lines 14-25 (ProxyStatus enum)
+Complete lifecycle from discovery to removal:
+```
+┌─────────────┐
+│  Unchecked  │  (Loaded from source, never checked)
+└──────┬──────┘
+       │ Health check (3-stage)
+       ├─────────────┬─────────────┐
+       │             │             │
+   Stage 1 fail   Stage 2 fail   Stage 3 check
+       │             │             │
+       v             v             v
+    ┌─────────────────────┐    ┌──────────────┐
+    │      Failed         │    │   Verified   │
+    │  (Circuit open)     │◄───┤ tls_clean=T  │
+    └──────────┬──────────┘    │ tls_clean=F  │
+               │ Circuit       └──────────────┘
+               │ expires (60s→300s→3600s)   │
+               │                            │ >60s stale
+               └────────────┬───────────────┘
+                            │
+                      ┌─────────────┐
+                      │ PresumedAlive│ (Loaded from persistent state.json)
+                      │  (Tier 2)   │ if last_success < 1 hour
+                      └─────────────┘
+               
+               50+ consecutive fails → ProxyStatus::Failed (permanent)
+               Until next source refresh
+```
+**Key State Transitions:**
+1. **Insert** → `ProxyStatus::Unchecked` (default)
+2. **First check success** → `ProxyStatus::Verified`
+3. **First check fail** → Still available (no penalty for 1-4 fails)
+4. **5+ consecutive fails** → `ProxyStatus::Failed` + circuit open (60s)
+5. **50+ consecutive fails** → `ProxyStatus::Failed` (permanent, until source refresh)
+6. **Success during circuit** → Immediately clear circuit, reset fail counter
+7. **Load from state.json** → `ProxyStatus::PresumedAlive` if recent success
+---
+### 8. TWO-TIER POOL WITH TLS CLASSIFICATION
+**Location:** `/home/user/vpn-gateway/src/pool/state.rs` lines 354-393 and `/home/user/vpn-gateway/src/pool/proxy.rs` lines 56-59
+**What is `tls_clean`?**
+- A runtime field tracking TLS validation result during Stage 3 health check
+- `None` = never checked for TLS, `Some(true)` = valid cert, `Some(false)` = MITM detected
+**Two-Tier Selection:**
+The gateway automatically selects based on traffic type:
+- **HTTPS traffic** (`select_best_for_tls()`): Prefers `tls_clean = true` proxies only
+  - Tier 1: Verified + TLS-clean only
+  - Tier 2: PresumedAlive + TLS-clean only
+  - Fallback: Any available proxy (better MITM than nothing)
+- **HTTP traffic** (`select_best()`): Uses the standard 3-tier without TLS filter
+**Used in transparent proxy** (`src/proxy/transparent.rs`):
+```rust
+let proxy = if is_https {
+    state.select_best_for_tls()     // HTTPS-only proxies
+} else {
+    state.select_best()              // Any available proxy
+};
+```
+**Metrics Tracked:**
+- `tls_clean_count()`: Proxies with `tls_clean = true`
+- `tls_dirty_count()`: Proxies with `tls_clean = false` (MITM proxies)
+---
+### 9. PERSISTENT STATE & RESUMPTION
+**Location:** `/home/user/vpn-gateway/src/pool/persistence.rs`
+**State Persistence Flow:**
+1. **Startup** → Load `data/state.json`
+2. **For each proxy in state:**
+   - If `last_success` < 1 hour ago → Mark `ProxyStatus::PresumedAlive`
+   - Else → Leave as `Unchecked` (will be re-verified)
+3. **Startup signal** → If any PresumedAlive proxies exist, immediately signal `first_ready` to unblock waiting clients
+4. **Periodic save** → Every 30s (configurable), save all checked proxies to state.json
+**Key Point:** This enables **fast startup** without waiting for full health checks.
+---
+### 10. CONFIGURATION DEFAULTS
+**Location:** `/home/user/vpn-gateway/src/config.rs`
+| Setting | Default | Purpose |
+|---------|---------|---------|
+| `health_check_interval` | 30s | Persistence save interval |
+| `source_update_interval` | 300s | Refresh proxy sources |
+| `gateway_port` | 1080 | SOCKS5 listen port |
+| `max_proxies` | 5000 | Pool size limit |
+| `state_path` | "data/state.json" | Persistence file |
+---
+### 11. SUMMARY: COMPLETE REQUEST FLOW
+```
+Client connects
+    │
+    ├─ Sticky session enabled?
+    │  ├─ Yes → Use cached proxy from sticky_sessions
+    │  └─ No → Continue
+    │
+    ├─ Is HTTPS?
+    │  ├─ Yes → select_best_for_tls() [Verified TLS-clean only]
+    │  └─ No → select_best() [3-tier standard selection]
+    │
+    ├─ Proxy available?
+    │  ├─ Yes → Use it, record success/fail based on result
+    │  └─ No → Wait 10s for first_ready signal
+    │
+    └─ On connection success → record_success(latency)
+       │ Updates EWMA, resets circuit, marks Verified
+       │
+       └─ On connection fail → record_fail()
+          Increments consecutive_fails
+          If ≥5 → Open circuit for escalating duration
+          If ≥50 → Mark permanently Failed
+```
+---
+### Key Files & Line References
+| Component | File | Lines |
+|-----------|------|-------|
+| Proxy struct & EWMA | `src/pool/proxy.rs` | 27-178 |
+| Selection logic | `src/pool/state.rs` | 161-317 |
+| Health check 3-stage | `src/pool/health_checker.rs` | 267-292 |
+| Health loop scheduling | `src/pool/health_checker.rs` | 410-441 |
+| State transitions | `src/pool/proxy.rs` | 14-25, 96-136 |
+| Persistence | `src/pool/persistence.rs` | 1-130 |
+| Config defaults | `src/config.rs` | 86-90 |
+This architecture creates a **robust, adaptive proxy pool** that:
+- **Fast fails** bad proxies (circuit breaker)
+- **Scores intelligently** (EWMA + recent success bonus)
+- **Detects MITM** (TLS validation in Stage 3)
+- **Recovers gracefully** (presumed alive + state persistence)
+- **Handles startup** (first_ready signaling)
+Agent
+Explore main.rs startup and overall architecture
+Perfect! I have comprehensive information. Let me now provide the user with a complete architectural overview.
+## Complete VPN Gateway Architecture & Startup Analysis
+Show less
+I've thoroughly explored the codebase. Here's the complete picture of how this VPN gateway system operates:
+---
+## **1. 4-LEVEL STARTUP SEQUENCE** (`/home/user/vpn-gateway/src/main.rs`)
+The system uses a sophisticated tiered startup approach to minimize latency before proxies are available:
+### **Level 0: INSTANT (synchronous)**
+- **Load state.json**: Restores proxies from previous session (pre-verified)
+- Marked as `ProxyStatus::PresumedAlive` (trusted but not re-checked)
+- Provides immediate fallback pool without network calls
+### **Level 1: FAST PROBE (3-8 seconds, parallel)**
+- **Bootstrap phase**: Fetches from top 3 proxy sources only (~60 proxies total)
+- **3-stage verification** (parallel on all loaded proxies):
+  1. **TCP connect** to proxy (timeout: 3000ms fast probe)
+  2. **HTTP CONNECT** handshake to cloudflare.com:80
+  3. **TLS validation** with certificate checking (MITM detection)
+- **CRITICAL**: First working proxy triggers `first_ready.notify_waiters()` immediately
+- Proxy server accepts connections during this phase (blocks on `first_ready` if empty)
+- GeoIP lookups spawn asynchronously (bounded to 20 concurrent requests)
+### **Level 2: BACKGROUND - Full Source Refresh**
+- Fetches from **all 27 proxy sources** (14 HTTP + 13 SOCKS5)
+- Default sources from GitHub proxy lists (see `/home/user/vpn-gateway/src/pool/source_manager.rs:8-40`)
+- Caps to **500 proxies per source** to prevent pool flooding
+- Runs continuously every `source_update_interval` seconds (config: **300s**)
+- Deduplicates automatically via DashMap
+### **Level 3: CONTINUOUS - Background Tasks**
+- **Health check loop** (starts after 10s delay): Runs every `health_check_interval` seconds (config: **30s**)
+- **State persistence loop**: Saves proxy state every 300 seconds (survives restarts)
+- **Connection pool cleanup**: Evicts stale connections every 60s (if enabled)
+- **Sticky sessions cleanup**: Removes expired client-to-proxy mappings every 60s
+- **Config hot-reload**: Watches gateway.json for changes, updates live
+---
+## **2. PROXY FETCHING & REFRESH MECHANISM** (`src/pool/source_manager.rs`)
+### **Fetch Pipeline:**
+1. **Retry strategy**: 3 attempts with exponential backoff (2^n seconds)
+2. **Rate limiting**: 500ms stagger between retries
+3. **Parse validation**: Only accepts valid `IP:PORT` format with IPv4 validation
+4. **Line filtering**: Ignores empty lines and comments starting with `#`
+### **Fast Bootstrap** (Level 1):
+```
+Top 3 sources → fetch in parallel → take first 20 per source = ~60 proxies
+```
+### **Full Refresh** (Level 2):
+```
+All 27 sources → fetch in parallel → deduplicate → insert if absent → cleanup stale
+```
+### **Source Configuration:**
+- Default sources hardcoded in code (27 well-known proxy aggregators)
+- Can be overridden via `config/sources.json` if file exists
+- Falls back to defaults if file missing or invalid
+---
+## **3. COMPONENT WIRING & SHARED STATE** (`src/pool/state.rs`)
+### **SharedState Architecture:**
+All components access shared state through lock-free **DashMap**:
+```rust
+pub struct SharedState {
+    proxies: Arc<DashMap<String, Proxy>>  // key = "IP:PORT"
+    banned: Arc<DashMap<String, Proxy>>   // manually banned proxies
+    first_ready: Arc<Notify>              // wake-up signal for clients waiting on empty pool
+    
+    // Atomic counters (no mutex contention)
+    total_requests: Arc<AtomicU64>
+    active_connections: Arc<AtomicU64>
+    proxy_rotations: Arc<AtomicU64>
+    
+    // Connection pooling
+    connection_pool: Arc<ConnectionPool>  // reusable TCP streams per proxy
+    
+    // Sticky sessions (client → proxy affinity)
+    sticky_sessions: Arc<StickySessionManager>
+    
+    // GeoIP for country filtering
+    geoip: Arc<GeoIp>
+    
+    // Geographic index for O(1) country-based lookup
+    geo_index: GeoIndex
+    
+    // Excluded countries (e.g., ["RU"])
+    exclude_countries: Arc<RwLock<Vec<String>>>
+}
+```
+### **Thread-Safe Design:**
+- **DashMap**: Lock-free concurrent reads (O(1) lookup)
+- **Atomic counters**: No contention, cheap increments
+- **Notify**: Efficient wakeup for waiting clients
+- **RwLock**: Only country exclusion list (low contention)
+---
+## **4. PROXY SELECTION ALGORITHM** (`src/pool/state.rs` lines 172-277)
+### **3-Tier Weighted Selection:**
+**Tier 1 (Preferred)**: Verified proxies
+- Passed health checks
+- Have measured latency (EWMA score)
+- Weighted by inverse latency (faster = higher weight)
+**Tier 2 (Fallback)**: PresumedAlive (from state.json)
+- Not yet re-checked this session
+- Trusted from previous run
+- Same scoring as Tier 1
+**Tier 3 (Last resort)**: Unchecked proxies
+- Just loaded from sources
+- Random selection (no latency data)
+### **Per-Tier Flow:**
+1. **Single-pass top-N collection** (O(n) scan of DashMap)
+2. **Keep best 10 candidates** by score
+3. **Weighted random selection** (lower score = higher probability)
+4. Returns single best proxy per request
+### **Special Case - HTTPS Traffic:**
+- Uses `select_best_for_tls()` instead
+- Only considers proxies with `tls_clean == Some(true)`
+- Avoids MITM proxies for encrypted traffic
+- Falls back to any available if TLS-clean pool empty
+---
+## **5. PROXY SCORING & HEALTH** (`src/pool/proxy.rs`)
+### **Score Components:**
+```rust
+score() = latency_ewma + 
+          (fail_penalty) + 
+          (circuit_breaker_penalty) - 
+          priority_boost
+```
+### **Latency Tracking:**
+- **EWMA (α = 0.2)**: `new = old * 0.8 + measured * 0.2`
+- Clamped to [0, 60000] ms
+- Initial pessimistic: 5000 ms
+### **Circuit Breaker:**
+- Escalating disable duration after consecutive failures:
+  - 0-4 failures: enabled
+  - 5-9: disabled 60s
+  - 10-19: disabled 300s
+  - 20-49: disabled 3600s (1 hour)
+  - 50+: permanently failed until next source refresh
+### **Verification Stages** (3-stage health check):
+**Stage 1 - TCP Connect** (timeout: configurable, default 3000ms for fast probe)
+- Tests basic network reachability
+- Returns latency
+**Stage 2 - HTTP CONNECT Handshake** (to cloudflare.com:80)
+- Verifies proxy actually forwards traffic
+- Checks for `HTTP/1.1 200` response
+- Returns latency
+**Stage 3 - TLS Validation** (to cloudflare.com:443)
+- Establishes tunnel through proxy (CONNECT or SOCKS5)
+- Performs TLS handshake with certificate validation
+- Uses system root CA bundle (webpki_roots)
+- Detects MITM proxies (self-signed certs)
+Result: `tls_clean = true` (clean) or `false` (MITM proxy but works)
+---
+## **6. API ENDPOINTS** (`src/api/web.rs`)
+### **Health & Monitoring:**
+| Endpoint | Method | Returns |
+|----------|--------|---------|
+| `/health` | GET | `{status, total_proxies, verified_proxies, available_proxies}` |
+| `/api/metrics` | GET | Detailed metrics (requests, connections, TLS split) |
+| `/metrics` | GET | Prometheus-format metrics (scrape-friendly) |
+### **Proxy Management:**
+| Endpoint | Method | Purpose |
+|----------|--------|---------|
+| `/api/proxies` | GET | List all available proxies (sorted by latency) |
+| `/api/proxy/add` | POST | Manually add proxy `{host, port, protocol?}` |
+| `/api/proxy/ban/{host:port}` | POST | Ban proxy from selection |
+| `/api/proxy/unban/{host:port}` | POST | Restore banned proxy |
+### **Network & WireGuard:**
+| Endpoint | Method | Purpose |
+|----------|--------|---------|
+| `/api/network-status` | GET | LAN/WAN IPs, peer count from `data/clients/network-status.json` |
+| `/api/wg/peers` | GET | List all WireGuard peers |
+| `/api/wg/peers/{name}/config` | GET | Download peer WireGuard config |
+| `/api/wg/peers/{name}/qr` | GET | QR code PNG for peer config |
+| `/` | GET | Dashboard HTML |
+### **Prometheus Metrics Exposed:**
+```
+vpn_proxies_total              # Total proxies in pool
+vpn_proxies_alive              # Available proxies
+vpn_proxies_banned             # Banned proxies
+vpn_avg_latency_ms             # Average latency
+vpn_connections_active         # Active TCP connections
+vpn_success_rate               # Overall success rate (0-1)
+vpn_circuit_breaker_trips      # Count of circuit breaker activations
+vpn_proxies_by_country{country=XX}  # Breakdown by country
+```
+---
+## **7. CONFIGURATION OPTIONS** (`config/gateway.json` & `src/config.rs`)
+### **Connection Limits:**
+```json
+{
+  "gateway_port": 1080,              // Transparent proxy listen port
+  "api_port": 8080,                  // Web API port
+  "udp_port": 1081,                  // UDP/DNS relay port
+  "max_proxies": 10000,              // Pool size limit
+  "max_connections": 10000,          // Max concurrent TCP connections
+```
+### **Refresh Timings:**
+```json
+  "health_check_interval": 30,       // Health loop interval (seconds)
+  "source_update_interval": 300,     // Full source refresh interval (5 min)
+```
+### **Filtering:**
+```json
+  "exclude_countries": ["RU"],       // ISO country codes to exclude
+  "geoip_path": "data/GeoLite2-City.mmdb"  // GeoIP database (optional)
+```
+### **Connection Pooling:**
+```json
+  "enable_connection_pool": false,   // Reuse TCP streams per proxy
+  "connection_pool_max_idle": 60,    // Keep idle connection for 60s
+  "connection_pool_max_per_proxy": 10,  // Max 10 pooled per proxy
+```
+### **Sticky Sessions:**
+```json
+  "enable_sticky_sessions": false,   // Keep client → proxy affinity
+  "sticky_session_ttl": 300,         // Affinity expires in 5 min
+```
+### **Network:**
+```json
+  "dns_upstream": "10.13.13.1:5353", // Upstream DNS for UDP relay
+  "api_bind": "10.13.13.1"           // API bind address (WireGuard interface)
+}
+```
+### **Persistence:**
+```json
+  "state_path": "data/state.json",   // Where to save proxy state
+  "sources_path": "config/sources.json"  // Custom proxy sources (optional)
+```
+---
+## **8. METRICS & MONITORING** (`src/pool/metrics.rs`)
+### **Tracked Metrics:**
+- **Pool composition**: total, alive, banned proxies
+- **Latency**: EWMA average of verified proxies
+- **Success rate**: cumulative successes / (successes + failures)
+- **Active connections**: running request count
+- **TLS split**: clean vs MITM proxies
+- **Circuit breaker trips**: count of proxies in open/disabled state
+- **Geographic distribution**: proxy count per country
+### **Collection Method:**
+- Single-pass scan of DashMap (O(n))
+- Called on-demand by `/metrics` endpoint
+- Prometheus format with help/type comments
+---
+## **9. CONCURRENT CONNECTION HANDLING**
+### **Max Connections:**
+- **Config limit**: `max_connections` (default 10000)
+- **Enforcement**: Transparent proxy spawns with semaphore
+- **Per-proxy**: Connection pool allows `connection_pool_max_per_proxy` (default 10 idle)
+### **Connection Lifecycle:**
+1. Client connects → transparent proxy intercepts
+2. Gets original destination via `SO_ORIGINAL_DST` (iptables REDIRECT)
+3. Checks for sticky session (client IP → proxy mapping)
+4. Selects best available proxy (with retry on failure)
+5. Connects to target through proxy (CONNECT for HTTP/HTTPS or SOCKS5)
+6. Bidirectional relay (`tokio::io::copy_bidirectional`)
+7. Optionally pools connection for reuse
+### **Sticky Sessions:**
+- Client IP → proxy key affinity
+- TTL: configurable (default 300s)
+- HTTPS-only checks TLS-clean flag on reuse
+- Auto-cleared on proxy failure (retry with fresh selection)
+---
+## **10. KEY DESIGN PATTERNS**
+### **Fast-Path Optimization:**
+- Level 1 fast bootstrap allows proxy server to start before full pool is ready
+- `first_ready` notify enables waiting clients to proceed immediately
+- No blocking on pool population
+### **Graceful Degradation:**
+- Tier-based proxy selection (verified → presumed → unchecked)
+- HTTPS falls back to non-TLS-clean proxies if needed
+- Retry logic (up to 3 attempts per request)
+### **Persistence:**
+- State.json saves proxy metadata between restarts
+- Level 0 restores trusted proxies instantly
+- Reduces convergence time on restart
+### **Scalability:**
+- Lock-free DashMap for 10k+ proxies
+- Atomic counters instead of mutexes
+- Bounded GeoIP concurrency (20 requests max)
+- Connection pooling reduces TCP overhead
+---
+## **Summary Table: Startup Timeline**
+| Time | Level | Action | Proxies Available |
+|------|-------|--------|-------------------|
+| T+0s | 0 | Load state.json | ~0-1000 (presumed) |
+| T+0s | API | Start servers | ✓ Accept connections |
+| T+0-3s | 1 | Fast bootstrap + probe | ~10-50 verified |
+| T+1s | 1 | First ready signal | Client unblocked |
+| T+8s | 1 | Fast probe complete | ~50-100 verified |
+| T+8s | 2 | Full source refresh starts | Growing... |
+| T+18s | 2 | Full refresh complete | 1000-5000 available |
+| T+30s | 3 | Health check starts | Continuous verification |
+This architecture enables the gateway to serve traffic within 1-3 seconds of startup while building a full proxy pool in the background.
+
+
+
+# Рабочий процесс с GitHub
+Правильный CI/CD:
+    push → feature branch → PR → CI проходит → merge в main
+                                                ↓
+                                     release-please создаёт release PR
+                                                ↓
+                                     merge release PR → тег → Docker :v1.0.7
+
+## Инструменты
+- git  -- стандартный контроль версий
+- gh   -- GitHub CLI (PR, релизы)
+
+Репозиторий: /root/vpn-gateway-repo/
+GitHub:      https://github.com/AlexanderGal86/vpn-gateway
+
+---
+
+## Внести изменение (через PR)
+
+  1. Создать ветку из main:
+       gpr "fix: описание"
+
+  2. Отредактировать файлы в /root/vpn-gateway-repo/
+
+  3. Запушить и создать PR:
+       gpush "fix: описание"
+
+  4. Смержить PR на GitHub:
+       https://github.com/AlexanderGal86/vpn-gateway/pulls
+
+  После merge в main:
+  - CI запускается автоматически
+  - Если коммит fix:/feat: -- release-please создаст релизный PR
+  - После merge релизного PR -- тег и Docker образ собираются
+
+---
+
+## Типы коммитов (conventional commits)
+  feat:           новая функция       -> minor bump  1.0.x -> 1.1.0
+  fix:            исправление бага    -> patch bump  1.0.x -> 1.0.x+1
+  chore/docs/ci:  служебное           -> релиза нет
+  BREAKING CHANGE в теле коммита      -> major bump  1.x.x -> 2.0.0
+
+---
+
+## Что делает каждый GitHub Actions workflow
+  CI             -- fmt + lint + test + bench -> docker :latest  (push в main)
+  Release Please -- следит за коммитами, создаёт release PR
+  Release        -- docker :v1.0.7 + GitHub Release  (на тег v*)
+
+---
+
+## Полезные команды
+  gh pr list                # список открытых PR
+  gh pr view --web          # открыть текущий PR в браузере
+  gh run list --limit 5     # последние запуски Actions
+  gh run watch              # следить за текущим запуском
+  git log --oneline -10     # последние коммиты
+  git status                # состояние рабочей дирек
