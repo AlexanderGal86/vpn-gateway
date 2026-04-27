@@ -38,7 +38,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # Socket options (SO_ORIGINAL_DST, TCP keepalive)
 nix = { version = "0.31", features = ["net"] }
 libc = "0.2.184"
-socket2 = "0.5"
+socket2 = "0.6"
 
 # TLS validation for MITM detection in health checks
 tokio-rustls = "0.26"
